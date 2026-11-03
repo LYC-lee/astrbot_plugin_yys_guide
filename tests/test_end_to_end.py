@@ -200,7 +200,7 @@ async def main() -> None:
     assert outputs, "没有任何输出"
     assert any(o.startswith("TEXT:") for o in outputs), "没有文本输出"
     final = outputs[-1]
-    assert "阴阳师 · 御魂" in final, "卡片标题不对"
+    assert "阴阳师 · 御魂怎么配" in final, f"卡片标题不对：{final[:40]}"
     assert "http" in final, "卡片里没有链接"
     print("\n[ok] 规则降级链路通过")
 
@@ -209,7 +209,8 @@ async def main() -> None:
         "模型摘要（真实抓取 + 假模型返回）", FakeLLMContext(), "yys 魂土阵容推荐"
     )
     final = outputs[-1]
-    assert "阵容" in final or "御魂" in final, "模型字段没渲染出来"
+    assert "魂土阵容" in final, f"卡片标题应回显用户说法：{final[:40]}"
+    assert "狂骨" in final, "模型字段没渲染出来"
     print("\n[ok] 模型摘要链路通过")
 
     print("\n\n### 场景 C：不相关的消息不应触发")

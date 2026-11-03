@@ -32,6 +32,19 @@
     "default": 5,
     "slider": { "min": 1, "max": 20, "step": 1 }
   },
+  "strict_relevance": {
+    "description": "只给相关的结果",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，标题和摘要里没出现关键词的内容会被丢弃；一条都没有时直接回「没找到」，而不是拿博主的最新动态凑满 5 条。关掉会变成「凑满格数」，问魂土可能收到活动日程表。"
+  },
+  "author_fetch_limit": {
+    "description": "每个博主抓取条数",
+    "type": "int",
+    "default": 12,
+    "slider": { "min": 3, "max": 30, "step": 1 },
+    "hint": "先在这个范围内按关键词筛，筛不出足够的再去站内搜索。数值越大覆盖越全，请求也越慢（大神主页固定只返回 9 条）。"
+  },
   "core_authors": {
     "type": "template_list",
     "description": "核心博主名单",

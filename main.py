@@ -51,10 +51,6 @@ from yys_fetchers import (  # noqa: E402
 
 PLUGIN_NAME = "astrbot_plugin_yys_guide"
 
-# 泛词不进正则：它们单独出现本来也不会触发，放进去只会增加无谓的 handler 调用
-_GENERIC_FOR_QUERY = {"阴阳师", "yys", "痒痒鼠", "onmyoji", "攻略", "最新", "最近"}
-
-
 def _build_trigger_pattern() -> str:
     words = aliases.all_trigger_words()
     return "(?i)(?:" + "|".join(re.escape(word) for word in words) + ")"
@@ -70,9 +66,9 @@ def _data_dir() -> str:
 @register(
     PLUGIN_NAME,
     "yys-guide",
-    "阴阳师攻略助手：关键词触发，自动抓取博主攻略（B站/NGA/微博/抖音）并整理成结构化卡片",
-    "1.0.0",
-    "https://github.com/your-name/astrbot_plugin_yys_guide",
+    "阴阳师攻略助手：关键词触发，自动抓取博主攻略（网易大神/B站/NGA/微博/抖音）并整理成结构化卡片",
+    "1.2.0",
+    "https://github.com/LYC-lee/astrbot_plugin_yys_guide",
 )
 class YysGuidePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -183,14 +179,39 @@ class YysGuidePlugin(Star):
         if not self._cfg("enabled", True):
             return
 
-        match = aliases.match(
-            event.message_str or "", str(self._cfg("trigger_mode", "strict"))
-        )
+        text = (event.message_str or "").strip()
+        # 别的插件的 /指令 不归我们管，避免把别人的命令也答一遍
+        if text[:1] in ("/", "／") and "yys" not in text[:6].lower():
+            return
+
+        match = aliases.match(text, str(self._cfg("trigger_mode", "strict")))
         if match is None:
             return
 
+        answered = False
         async for result in self._process(event, match):
+            answered = True
             yield result
+
+        # 答完就把事件掐掉：不然默认 LLM / 别的关键词插件会再回一遍同一条消息
+        if answered:
+            self._halt(event)
+
+    @staticmethod
+    def _halt(event: AstrMessageEvent) -> None:
+        """告诉 AstrBot：这条我已经答了，后面的 handler 和默认 LLM 都别再说话。"""
+        should_call_llm = getattr(event, "should_call_llm", None)
+        if callable(should_call_llm):
+            try:
+                should_call_llm(False)
+            except Exception:  # noqa: BLE001
+                pass
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[yys-guide] 终止事件传播失败：{exc!r}")
 
     @filter.command("yys")
     async def cmd_yys(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -227,6 +248,7 @@ class YysGuidePlugin(Star):
             )
         async for result in self._process(event, match, force_refresh=False):
             yield result
+        self._halt(event)
 
     @filter.command("yys刷新")
     async def cmd_refresh(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -282,30 +304,28 @@ class YysGuidePlugin(Star):
         force_refresh: bool = False,
     ) -> AsyncGenerator[Any, None]:
         umo = event.unified_msg_origin
-        topic = match.topic
-        keywords = match.search_keywords or [match.alias]
+        # 卡片标题用用户自己的说法。「魂土阵容」显示成「御魂」会让人以为搜错了
+        display = match.display or match.topic
+        keywords = match.keywords
         limit = max(1, int(self._cfg("max_items", 5)))
 
         if not force_refresh and not self._check_cooldown(umo):
             return
 
         if bool(self._cfg("show_progress", True)):
-            yield event.plain_result(f"正在检索「{topic}」相关攻略，稍等一下…")
+            yield event.plain_result(f"正在检索「{display}」相关攻略，稍等一下…")
 
         items: list[GuideItem] = []
         notice = ""
         try:
             items, notice = await self._gather(
-                topic, keywords, limit, use_cache=not force_refresh
+                display, keywords, limit, use_cache=not force_refresh
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(f"[yys-guide] 抓取阶段异常：{exc!r}")
 
         if not items:
-            yield event.plain_result(
-                f"▎阴阳师 · {topic}\n"
-                "\u3000没找到近期相关攻略。可以试试换个说法，或者检查核心博主配置是否正确。"
-            )
+            yield event.plain_result(await self._no_result_text(display, keywords))
             return
 
         await self._enrich(items)
@@ -315,7 +335,7 @@ class YysGuidePlugin(Star):
             entries = await summarize(
                 self.context,
                 umo,
-                topic,
+                display,
                 match.raw,
                 items,
                 use_llm=bool(self._cfg("summary.use_llm", True)),
@@ -332,7 +352,7 @@ class YysGuidePlugin(Star):
             entries = rule_summarize(items)
 
         text = render(
-            topic,
+            display,
             entries,
             str(self._cfg("render.style", "card")),
             notice=notice,
@@ -347,6 +367,46 @@ class YysGuidePlugin(Star):
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"[yys-guide] 封面发送失败：{exc!r}")
                     break
+
+    async def _no_result_text(self, display: str, keywords: "aliases.Keywords") -> str:
+        """一条相关的都没有时，说清楚查了哪儿、给出更具体的说法。
+
+        比硬塞几条无关内容好：用户看一眼就知道不是搜漏了，而是确实没有。
+        """
+        lines = [
+            f"▎阴阳师 · {display}",
+            f"\u3000没找到「{display}」相关的近期攻略。",
+        ]
+
+        latest = await self._latest_titles(2)
+        if latest:
+            lines.append(f"\u3000博主最近在聊：{' / '.join(latest)}")
+
+        word = keywords.label
+        lines.append(
+            f"\u3000可以换个更具体的说法，比如「{word} 御魂」「{word} 阵容」，"
+            "或者加上式神名。"
+        )
+        return "\n".join(lines)
+
+    async def _latest_titles(self, count: int) -> list[str]:
+        """缓存里最新的几条标题，只用来做「最近在聊」的提示。"""
+        try:
+            items = await self._cache.query(None, limit=count * 4)
+        except Exception:  # noqa: BLE001
+            return []
+
+        titles: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            key = title_key(item.title)
+            if key in seen:
+                continue
+            seen.add(key)
+            titles.append(item.title[:18])
+            if len(titles) >= count:
+                break
+        return titles
 
     def _check_cooldown(self, umo: str) -> bool:
         cooldown = int(self._cfg("cooldown_seconds", 60))
@@ -363,7 +423,7 @@ class YysGuidePlugin(Star):
     async def _gather(
         self,
         topic: str,
-        keywords: list[str],
+        keywords: "aliases.Keywords",
         limit: int,
         *,
         use_cache: bool = True,
@@ -373,12 +433,14 @@ class YysGuidePlugin(Star):
         fetch_limit = max(limit * 2, limit + 3)
 
         if use_cache:
-            cached = await self._cache.query(keywords, limit=fetch_limit)
+            cached = await self._cache.query(keywords.all, limit=fetch_limit * 2)
             for item in cached:
                 merged[item.key] = item
-            if len(merged) >= fetch_limit:
-                logger.debug(f"[yys-guide] 缓存命中 {len(merged)} 条：{keywords}")
-                return self._finalize(merged, limit, keywords), ""
+            # 缓存里条数够不等于「够用」：还要看有几条真的对题
+            enough = self._finalize(merged, limit, keywords)
+            if len(enough) >= limit:
+                logger.debug(f"[yys-guide] 缓存命中 {len(enough)} 条：{keywords.all}")
+                return enough, ""
 
         fresh, notice = await self._fetch(topic, keywords, fetch_limit)
         if fresh:
@@ -399,7 +461,7 @@ class YysGuidePlugin(Star):
         self,
         merged: dict[str, GuideItem],
         limit: int,
-        keywords: list[str] | None = None,
+        keywords: "aliases.Keywords | None" = None,
     ) -> list[GuideItem]:
         """排序 + 去重 + 最后一道过滤。缓存里可能残留旧版本写进去的营销内容。"""
         ordered = self._sort_items(merged, keywords)
@@ -414,18 +476,58 @@ class YysGuidePlugin(Star):
         if len(in_site) >= limit:
             kept = in_site
 
+        # 关键词一个都没命中的，直接不要。
+        # 以前这里是「不够 5 条就拿博主的其他动态补」，于是问「魂土阵容」
+        # 会收到「本周活动日程表」——凑满五格，但没有一条是用户问的。
+        if keywords and bool(self._cfg("strict_relevance", True)):
+            kept = self._relevant_only(kept, keywords)
+
         # 同一平台、同一标题只留一条。
         # 大神/B站的作者经常把一篇攻略拆成几条发（正文只改个开头），
         # 按 item_id 去重拦不住，卡片里会出现两条几乎一样的条目。
-        # 跨平台不去重：同一篇内容在 B站是视频、在大神是图文，两种形态都留着。
         unique: dict[str, GuideItem] = {}
         for item in kept:
             unique.setdefault(item.dedup_hash(), item)
         if len(unique) < len(kept):
             logger.debug(f"[yys-guide] 标题去重，合并 {len(kept) - len(unique)} 条")
 
-        deduped = self._drop_near_duplicates(list(unique.values()))
-        return self._balance_authors(deduped, limit)
+        # 跨平台的同名内容也只留一条：同一篇攻略常被博主同步发到大神和 B站，
+        # 卡片里两条一模一样的标题看着像出了 bug。排序已经把「对题 + 站内 + 新」
+        # 排在前面，所以保留先到的那条即可。
+        deduped = self._drop_duplicate_titles(list(unique.values()))
+
+        return self._balance_authors(self._drop_near_duplicates(deduped), limit)
+
+    @staticmethod
+    def _drop_duplicate_titles(items: list[GuideItem]) -> list[GuideItem]:
+        """跨平台去重：标题完全一样、或者一个是另一个的「主体」，只留一条。
+
+        「【逢魔演武蜃气楼】图片版：4套阵容码，掉首领御魂」和
+        「【阴阳师】逢魔演武-蜃气楼：4套阵容码，掉首领御魂」是同一篇，
+        前者是从神发的图文、后者是 B站视频，标题不同但说的是同一件事。
+        """
+        kept: list[GuideItem] = []
+        for item in items:
+            key = title_key(item.title)
+            duplicate = False
+            for existing in kept:
+                other = title_key(existing.title)
+                if not key or not other:
+                    continue
+                if key == other:
+                    duplicate = True
+                    break
+                if existing.source == item.source:
+                    continue  # 同平台的近似标题交给 _drop_near_duplicates
+                shorter, longer = sorted((key, other), key=len)
+                if len(shorter) >= 8 and shorter in longer:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept.append(item)
+        if len(kept) < len(items):
+            logger.debug(f"[yys-guide] 跨平台同名去重，合并 {len(items) - len(kept)} 条")
+        return kept
 
     @staticmethod
     def _drop_near_duplicates(items: list[GuideItem]) -> list[GuideItem]:
@@ -488,22 +590,30 @@ class YysGuidePlugin(Star):
         return picked[:limit]
 
     async def _fetch(
-        self, topic: str, keywords: list[str], limit: int
+        self, topic: str, keywords: "aliases.Keywords", limit: int
     ) -> tuple[list[GuideItem], str]:
         per_source = max(2, limit)
+        # 博主那边多拿一点：大神主页固定返回 9 条，B站翻页也便宜，
+        # 多拿才有机会在里面翻到一条真的讲「魂土」的。
+        author_limit = max(per_source, int(self._cfg("author_fetch_limit", 12)))
 
-        author_items, notice = await self._fetch_authors(per_source)
-        if author_items and not self._is_stale(author_items):
-            relevant = self._filter_relevant(author_items, keywords)
-            if len(relevant) >= limit:
-                return relevant[:limit], ""
-        elif author_items:
-            logger.debug("[yys-guide] 核心博主近期没更新，转向话题搜索")
+        author_items, notice = await self._fetch_authors(author_limit)
+        strict = bool(self._cfg("strict_relevance", True))
+        author_pool = (
+            self._relevant_only(author_items, keywords) if strict else author_items
+        )
 
-        query = self._build_query(topic, keywords)
-        search_items = await self._search_all(query, keywords, per_source)
+        # 博主近期发的内容够用就直接返回，不再打搜索接口
+        if len(author_pool) >= limit:
+            return author_pool[:limit], ""
 
-        combined, dropped = filter_items(author_items + search_items)
+        if author_items and not author_pool:
+            logger.debug(f"[yys-guide] 博主近期没有「{keywords.label}」相关内容，转向站内搜索")
+
+        # 不够就补搜索。注意这里补的是「搜到的结果」，不是把博主其他动态塞进来
+        search_items = await self._search_all(keywords, per_source)
+
+        combined, dropped = filter_items(author_pool + search_items)
         if dropped:
             logger.debug(f"[yys-guide] 过滤掉 {dropped} 条营销/无关内容")
         return combined, notice
@@ -566,8 +676,9 @@ class YysGuidePlugin(Star):
         return items, notice
 
     async def _search_all(
-        self, query: str, keywords: list[str], limit: int
+        self, keywords: "aliases.Keywords", limit: int
     ) -> list[GuideItem]:
+        query = keywords.query()
         tasks = []
         for name in ("bilibili", "nga", "weibo", "web"):
             if not self._source_enabled(name):
@@ -576,7 +687,7 @@ class YysGuidePlugin(Star):
             if fetcher is None:
                 continue
             # NGA 是版块内按标题过滤，给它短词更合适
-            keyword = " ".join(self._content_keywords(keywords)) if name == "nga" else query
+            keyword = " ".join(keywords.strong or keywords.weak) if name == "nga" else query
             if not keyword:
                 keyword = query
             tasks.append(fetcher.safe(fetcher.search(keyword, limit), f"搜索 {name}"))
@@ -626,20 +737,43 @@ class YysGuidePlugin(Star):
                     ids.add(value.lower())
         return names, ids
 
+    @staticmethod
+    def _relevance(item: GuideItem, keywords: "aliases.Keywords") -> int:
+        """这条内容和问题的相关度。
+
+        2 = 标题命中具体词（魂土 / 须佐之男），就是用户问的那件事；
+        1 = 标题只命中大方向（御魂），沾边但排后面；
+        0 = 只命中「阵容」这类意图词，或者什么都没命中，等于答非所问。
+
+        **只看标题，不看摘要**。大神的「摘要」其实是整篇正文，
+        一篇「PVE 内容合集」的正文里必然列出「魂十、魂土、魂王、结界突破……」，
+        拿摘要判断的话，它会被当成魂土攻略排到第一位——这正是截图里
+        「问魂土却收到葛叶式神改动」的原因。
+        """
+        if not keywords:
+            return 1
+        title = (item.title or "").lower()
+        if any(word.lower() in title for word in keywords.strong):
+            return 2
+        if any(word.lower() in title for word in keywords.weak):
+            return 1
+        return 0
+
+    def _relevant_only(
+        self, items: list[GuideItem], keywords: "aliases.Keywords"
+    ) -> list[GuideItem]:
+        if not keywords:
+            return list(items)
+        return [item for item in items if self._relevance(item, keywords) > 0]
+
     def _sort_items(
         self,
         items: dict[str, GuideItem] | list[GuideItem],
-        keywords: list[str] | None = None,
+        keywords: "aliases.Keywords | None" = None,
     ) -> list[GuideItem]:
         pool = list(items.values()) if isinstance(items, dict) else list(items)
         core_names, core_ids = self._core_signatures()
-        content_keywords = self._content_keywords(keywords or [])
-
-        def hits(item: GuideItem) -> bool:
-            if not content_keywords:
-                return True
-            haystack = f"{item.title} {item.digest}".lower()
-            return any(word.lower() in haystack for word in content_keywords)
+        kw = keywords or aliases.Keywords()
 
         def is_core(item: GuideItem) -> bool:
             if (item.author or "").strip() in core_names:
@@ -650,53 +784,17 @@ class YysGuidePlugin(Star):
                     return True
             return False
 
-        # 排序优先级：核心博主且对题 > 对题 > 不对题的博主 ≥ 其他人。
-        # 用户配博主是为了优先看他们，但博主在聊别的东西时不该霸占卡片。
-        # 组内仍按时间倒序。
-        # source_kind 用来把搜索引擎结果压到最后：它是兜底，不该和有作者的站内内容平级。
+        # 排序优先级：对题 > 核心博主 > 站内 > 时间。
+        # 「对题」必须排第一：用户配博主是为了优先看他们，但博主在聊别的东西时
+        # 不该顶掉一条真的讲魂土的视频——这正是「搜索不准确」的观感来源。
+        # source 用来把搜索引擎结果压在站内内容后面：它是兜底，不该和有作者的内容平级。
         def rank(item: GuideItem) -> tuple[int, int, int, float]:
+            tier = self._relevance(item, kw)
             core = 1 if is_core(item) else 0
-            relevant = 1 if hits(item) else 0
             in_site = 0 if item.source == "web" else 1
-            return (core * relevant, relevant, in_site, item.published_ts)
+            return (tier, core, in_site, item.published_ts)
 
         return sorted(pool, key=rank, reverse=True)
-
-    def _is_stale(self, items: list[GuideItem], hours: int = 24) -> bool:
-        newest = max((item.published_ts for item in items), default=0.0)
-        if newest <= 0:
-            return True
-        return (time.time() - newest) > hours * 3600
-
-    def _content_keywords(self, keywords: list[str]) -> list[str]:
-        filtered = [k for k in keywords if k not in _GENERIC_FOR_QUERY]
-        return filtered or keywords
-
-    def _filter_relevant(
-        self, items: list[GuideItem], keywords: list[str]
-    ) -> list[GuideItem]:
-        content_keywords = self._content_keywords(keywords)
-        if not content_keywords:
-            return items
-        relevant = [
-            item
-            for item in items
-            if any(
-                keyword.lower() in f"{item.title} {item.digest}".lower()
-                for keyword in content_keywords
-            )
-        ]
-        # 过滤太狠就退回全部，宁可给多也不给空
-        return relevant or items
-
-    def _build_query(self, topic: str, keywords: list[str]) -> str:
-        parts = ["阴阳师"]
-        for word in self._content_keywords(keywords)[:2]:
-            if word not in parts:
-                parts.append(word)
-        if topic and topic not in parts:
-            parts.append(topic)
-        return " ".join(parts)
 
     # ------------------------------------------------------------ 定时预热
 
@@ -729,12 +827,12 @@ class YysGuidePlugin(Star):
             await self._push_digest()
             return total
 
-    def _warmup_targets(self) -> list[tuple[str, list[str]]]:
+    def _warmup_targets(self) -> list[tuple[str, "aliases.Keywords"]]:
         raw_topics = self._cfg("topics", []) or []
         if not isinstance(raw_topics, list):
             return []
 
-        targets: list[tuple[str, list[str]]] = []
+        targets: list[tuple[str, "aliases.Keywords"]] = []
         for raw in raw_topics:
             text = str(raw).strip()
             if not text:
@@ -743,8 +841,7 @@ class YysGuidePlugin(Star):
             if not words:
                 continue
             topic = words[-1]
-            keywords = [w for w in words if w not in _GENERIC_FOR_QUERY] or [topic]
-            targets.append((topic, keywords))
+            targets.append((topic, aliases.keywords_from_words(words)))
         return targets
 
     async def _push_digest(self) -> None:
