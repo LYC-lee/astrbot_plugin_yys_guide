@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 插件运行时会写 SQLite 缓存，位置由 AstrBot 的数据目录决定，
+# 万一有人直接在插件目录里跑，别把库提交上来
+data/
+*.db
+*.db-journal
+*.sqlite
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,351 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "default": true
+  },
+  "trigger_mode": {
+    "description": "触发模式",
+    "type": "string",
+    "default": "strict",
+    "options": ["strict", "loose"],
+    "labels": ["严格：需带阴阳师/yys/攻略", "宽松：命中任意别名就回复"],
+    "hint": "严格模式要求消息里出现「阴阳师 / yys / 痒痒鼠」或结尾带「攻略 / 推荐 / 怎么打」，避免群聊里提到「御魂」就刷屏。宽松模式命中任意别名即触发。",
+    "subtitles": ["误触发少，推荐", "响应积极，但容易刷屏"]
+  },
+  "cooldown_seconds": {
+    "description": "同会话冷却时间（秒）",
+    "type": "int",
+    "default": 60,
+    "slider": { "min": 0, "max": 600, "step": 10 },
+    "hint": "同一群/私聊在冷却时间内重复触发会被忽略，0 表示不限制。"
+  },
+  "show_progress": {
+    "description": "先回一句「正在检索」",
+    "type": "bool",
+    "default": true,
+    "hint": "抓取+大模型摘要通常需要 3-10 秒，先回一句提示避免用户以为没反应。"
+  },
+  "max_items": {
+    "description": "单次最多展示条数",
+    "type": "int",
+    "default": 5,
+    "slider": { "min": 1, "max": 20, "step": 1 }
+  },
+  "core_authors": {
+    "type": "template_list",
+    "description": "核心博主名单",
+    "hint": "已内置 4 位网易大神作者（图文攻略主力，实测平均 1-2 天一更）+ 4 位 B站 UP 主（视频攻略）。大神填 32 位十六进制 uid，B站填数字 mid。NGA / 抖音不支持按作者抓取。全部删空则只走「话题兜底搜索」。",
+    "default": [
+      {
+        "__template_key": "ds163",
+        "uid": "a9724e98c1cb4a4e931ebc3f467ea73d",
+        "name": "槐夏三十",
+        "topics": ""
+      },
+      {
+        "__template_key": "ds163",
+        "uid": "aaa923436aa440df9ac1ee3f47387b99",
+        "name": "yys雯雯",
+        "topics": ""
+      },
+      {
+        "__template_key": "ds163",
+        "uid": "b6b5bc8277e34f69aeca018db0081397",
+        "name": "Mico林木森",
+        "topics": ""
+      },
+      {
+        "__template_key": "ds163",
+        "uid": "6f3189e218fb4f6492b99efcbbd79119",
+        "name": "姝酱的小本本",
+        "topics": ""
+      },
+      {
+        "__template_key": "bilibili",
+        "mid": "297721993",
+        "name": "流沙河底",
+        "topics": ""
+      },
+      {
+        "__template_key": "bilibili",
+        "mid": "687489264",
+        "name": "姝酱的小本本",
+        "topics": ""
+      },
+      {
+        "__template_key": "bilibili",
+        "mid": "12381891",
+        "name": "徐小侠丶",
+        "topics": ""
+      },
+      {
+        "__template_key": "bilibili",
+        "mid": "102859066",
+        "name": "在下小贱哥哥",
+        "topics": ""
+      }
+    ],
+    "templates": {
+      "ds163": {
+        "name": "网易大神作者",
+        "display_item": "name",
+        "items": {
+          "uid": {
+            "description": "大神 uid",
+            "type": "string",
+            "default": "",
+            "hint": "主页 https://m.ds.163.com/user/<uid> 里的 32 位十六进制，不是昵称"
+          },
+          "name": {
+            "description": "备注名",
+            "type": "string",
+            "default": ""
+          },
+          "topics": {
+            "description": "关注话题",
+            "type": "string",
+            "default": "",
+            "hint": "逗号分隔，如「御魂,超鬼王」。留空表示这个作者的所有内容都收。"
+          }
+        }
+      },
+      "bilibili": {
+        "name": "B站 UP 主",
+        "display_item": "name",
+        "items": {
+          "mid": {
+            "description": "UP 主 mid",
+            "type": "string",
+            "default": "",
+            "hint": "空间页 https://space.bilibili.com/123456 里的 123456"
+          },
+          "name": {
+            "description": "备注名",
+            "type": "string",
+            "default": ""
+          },
+          "topics": {
+            "description": "关注话题",
+            "type": "string",
+            "default": "",
+            "hint": "逗号分隔，如「御魂,阵容」。留空表示这个博主的所有内容都收。"
+          }
+        }
+      },
+      "weibo": {
+        "name": "微博博主",
+        "display_item": "name",
+        "items": {
+          "uid": {
+            "description": "微博 uid",
+            "type": "string",
+            "default": "",
+            "hint": "主页地址 https://weibo.com/u/1234567890 里的数字"
+          },
+          "name": {
+            "description": "备注名",
+            "type": "string",
+            "default": ""
+          },
+          "topics": {
+            "description": "关注话题",
+            "type": "string",
+            "default": ""
+          }
+        }
+      }
+    }
+  },
+  "topics": {
+    "description": "兜底搜索话题词",
+    "type": "list",
+    "default": ["阴阳师 御魂", "阴阳师 阵容", "阴阳师 活动攻略"],
+    "hint": "核心博主当天没更新时，用这些词去做平台内搜索。"
+  },
+  "sources": {
+    "description": "启用的数据源",
+    "type": "object",
+    "items": {
+      "bilibili": {
+        "description": "B站",
+        "type": "bool",
+        "default": true
+      },
+      "ds163": {
+        "description": "网易大神",
+        "type": "bool",
+        "default": true
+      },
+      "nga": {
+        "description": "NGA 阴阳师版",
+        "type": "bool",
+        "default": true
+      },
+      "weibo": {
+        "description": "微博",
+        "type": "bool",
+        "default": true
+      },
+      "douyin": {
+        "description": "抖音",
+        "type": "bool",
+        "default": true
+      },
+      "web_search": {
+        "description": "搜索引擎兜底",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "douyin_mode": {
+    "description": "抖音处理方式",
+    "type": "string",
+    "default": "try_meta",
+    "options": ["try_meta", "link_only"],
+    "labels": ["尝试解析文案/封面", "只返回链接"],
+    "hint": "插件不做视频语音转写（token 消耗大）。try_meta 会尝试抓视频文案和封面，失败自动降级为只给链接。",
+    "subtitles": ["信息更多，可能被风控", "最稳，只给标题和链接"]
+  },
+  "summary": {
+    "description": "摘要设置",
+    "type": "object",
+    "items": {
+      "use_llm": {
+        "description": "优先用大模型整理",
+        "type": "bool",
+        "default": true,
+        "hint": "关掉或调用失败时自动退回规则抽取（标题 + 原文前 160 字 + 链接）。"
+      },
+      "llm_max_items": {
+        "description": "送进模型的条数上限",
+        "type": "int",
+        "default": 5,
+        "slider": { "min": 1, "max": 10, "step": 1 }
+      },
+      "item_max_chars": {
+        "description": "单条原文截断字数",
+        "type": "int",
+        "default": 1800,
+        "slider": { "min": 200, "max": 6000, "step": 100 }
+      },
+      "llm_timeout": {
+        "description": "模型调用超时（秒）",
+        "type": "int",
+        "default": 40,
+        "slider": { "min": 10, "max": 120, "step": 5 }
+      }
+    }
+  },
+  "render": {
+    "description": "卡片样式",
+    "type": "object",
+    "items": {
+      "style": {
+        "description": "渲染风格",
+        "type": "string",
+        "default": "card",
+        "options": ["card", "markdown", "plain"],
+        "labels": ["卡片（分块 + 分隔线）", "Markdown", "纯文本"],
+        "hint": "QQ/微信建议用 card，Discord/Telegram/飞书可以用 markdown。"
+      },
+      "show_cover": {
+        "description": "附带封面图",
+        "type": "bool",
+        "default": false,
+        "hint": "需要平台支持图片消息，部分平台会额外占一条消息。"
+      }
+    }
+  },
+  "cache": {
+    "description": "缓存设置",
+    "type": "object",
+    "items": {
+      "ttl_minutes": {
+        "description": "缓存有效期（分钟）",
+        "type": "int",
+        "default": 180,
+        "slider": { "min": 10, "max": 1440, "step": 10 }
+      },
+      "max_rows": {
+        "description": "最多保留条目数",
+        "type": "int",
+        "default": 2000,
+        "slider": { "min": 100, "max": 20000, "step": 100 },
+        "hint": "超出后自动清理最旧的记录。"
+      }
+    }
+  },
+  "warmup": {
+    "description": "定时预热",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用定时预热",
+        "type": "bool",
+        "default": true
+      },
+      "times": {
+        "description": "预热时间点",
+        "type": "list",
+        "default": ["09:00", "20:00"],
+        "hint": "24 小时制，如 09:00。到点自动抓一轮存进缓存，用户触发时秒回。"
+      },
+      "push_umo": {
+        "description": "预热后推送到的会话",
+        "type": "list",
+        "default": [],
+        "hint": "留空表示只预热不推送，不会在群里刷消息。给 AstrBot 发过消息的会话才会出现在候选里。"
+      }
+    }
+  },
+  "cookies": {
+    "description": "平台 Cookie（可选）",
+    "type": "object",
+    "items": {
+      "bilibili": {
+        "description": "B站 Cookie",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "留空会自动申请游客 buvid3。填了登录态可提高搜索接口成功率。"
+      },
+      "weibo": {
+        "description": "微博 Cookie",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "m.weibo.cn 的 SUB 字段。部分接口游客也能读，读不到时再填。"
+      },
+      "nga": {
+        "description": "NGA Cookie",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "留空会自动生成游客 guestJs。"
+      }
+    }
+  },
+  "search": {
+    "description": "搜索引擎",
+    "type": "object",
+    "items": {
+      "engine": {
+        "description": "引擎",
+        "type": "string",
+        "default": "so360",
+        "options": ["so360", "bing", "searxng", "none"],
+        "labels": ["360 搜索", "Bing", "SearXNG（自建）", "不用"],
+        "subtitles": ["免 key，中文结果正常", "无 cookie 时容易跑偏", "需要自己部署", "只靠站内数据"],
+        "hint": "用于「话题兜底搜索」和核心博主当天没更新时的补充。实测 360 对无 cookie 请求最稳。"
+      },
+      "searxng_url": {
+        "description": "SearXNG 地址",
+        "type": "string",
+        "default": "",
+        "hint": "如 http://127.0.0.1:8080 ，需要在实例上开启 json 格式输出。"
+      }
+    }
+  }
+}
