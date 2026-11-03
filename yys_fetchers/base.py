@@ -23,7 +23,9 @@ class BaseFetcher:
         self.client = client
         self.conf = conf or {}
 
-    async def fetch_author(self, target: dict[str, Any], limit: int) -> list[GuideItem]:
+    async def fetch_author(self, target: dict[str, Any], limit: int,
+        keywords: list[str] | None = None,
+    ) -> list[GuideItem]:
         """按博主抓取。target 来自 core_authors 配置项。"""
         return []
 

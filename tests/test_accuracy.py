@@ -281,6 +281,98 @@ text = asyncio.run(_no_result())
 check("回显用户说法", "魂土阵容" in text, text)
 check("给出更具体的建议", "魂土 御魂" in text, text)
 
+
+# ---------------------------------------------------------------- 玩法覆盖 + 早退排序
+
+print("\n=== 6. 副本/玩法词的覆盖 ===")
+
+# 这些词以前都不在别名表里，问「真蛇」会被判成「通用」，
+# 于是相关性判断直接失效，卡片里塞满博主的其他动态。
+for word, expect_topic in [
+    ("真蛇", "真蛇"),
+    ("魂王", "御魂"),
+    ("魂十", "御魂"),
+    ("逢魔", "首领"),
+    ("麒麟", "首领"),
+    ("契灵", "契灵"),
+    ("名仕", "斗技"),
+]:
+    m = aliases.match(f"阴阳师{word}", "strict")
+    check(
+        f"「{word}」有专属话题",
+        m is not None and m.topic == expect_topic,
+        f"-> {getattr(m, 'topic', None)}",
+    )
+    check(
+        f"「{word}」进得了强词",
+        m is not None and word in m.keywords.strong,
+        f"-> {getattr(m, 'keywords', None)}",
+    )
+
+# 「阴阳师真蛇」不带意图词也要能搜对，不能退化成只搜「阴阳师」
+m = aliases.match("阴阳师真蛇", "strict")
+check(
+    "具体玩法不会被泛化成阴阳师",
+    m is not None and m.keywords.query() == "阴阳师 真蛇",
+    f"-> {m.keywords.query() if m else None}",
+)
+
+# 不带锚点、也没有「怎么/攻略」这类意图词时不该触发：
+# 群里突然冒一句「麒麟」大概率不是在聊游戏
+check("裸词不误触发", aliases.match("麒麟", "strict") is None)
+# 但带上意图词要能触发，否则「真蛇怎么打」就搜不了
+check("带意图词能触发", aliases.match("真蛇怎么打", "strict") is not None)
+
+
+print("\n=== 7. 博主够数时也要排序 ===")
+
+# 抓取是并发的，谁先回来谁先入列表。早期版本直接 [:5]，
+# 于是「阴阳师」这种泛查询会变成「最先返回的那位博主霸榜」。
+from datetime import datetime, timedelta  # noqa: E402
+
+from yys_core.models import CN_TZ, GuideItem  # noqa: E402
+
+now = datetime.now(CN_TZ)
+
+
+def _mk(source: str, author: str, hours: int, title: str) -> GuideItem:
+    return GuideItem(
+        source=source,
+        item_id=f"{source}{hours}{title[:4]}",
+        title=title,
+        url="https://example.com",
+        author=author,
+        published=now - timedelta(hours=hours),
+        digest="",
+    )
+
+
+pool = [
+    _mk("bilibili", "快返回的博主", 30, "道馆一套阵容斩600功勋"),
+    _mk("bilibili", "快返回的博主", 31, "白叶连如何绝对一速"),
+    _mk("bilibili", "快返回的博主", 32, "不建议二号机咲耶"),
+    _mk("bilibili", "快返回的博主", 33, "离咲联手真蛇四白蛋"),
+    _mk("ds163", "槐夏三十", 1, "【体验服式神改动】葛叶削弱"),
+    _mk("ds163", "雯雯", 2, "【备战超鬼王】准备工作"),
+]
+pool = plugin._sort_items(pool, aliases.match("阴阳师", "strict").keywords)
+balanced = plugin._balance_authors(pool, 4)
+check(
+    "最新的那条排在第一位",
+    balanced[0].author == "槐夏三十",
+    f"-> {balanced[0].author}: {balanced[0].title}",
+)
+check(
+    "不按到达顺序定胜负",
+    balanced[0].published >= balanced[-1].published,
+    f"-> {[b.published.hour for b in balanced]}",
+)
+check(
+    "单作者最多占 2 条",
+    sum(1 for b in balanced if b.author == "快返回的博主") <= 2,
+    str([b.author for b in balanced]),
+)
+
 print(f"\n{'=' * 40}")
 print(f"通过 {PASS} 项，失败 {FAIL} 项")
 print("=" * 40)

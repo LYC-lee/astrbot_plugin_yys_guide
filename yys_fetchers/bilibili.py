@@ -33,6 +33,9 @@ _VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
 # 空间接口是 IP 级配额，实测连续请求十几秒内就会 -799 / 412，
 # 两次之间至少隔这么久；抓取器里还会用搜索接口兜底。
 _SPACE_COOLDOWN = 8.0
+# 排队超过这么久就别等了，直接走搜索兜底：宁可少拿几条，
+# 也不能让一次聊天查询卡 30 秒
+_SPACE_MAX_WAIT = 3.0
 
 
 def _norm_url(url: str | None) -> str:
@@ -64,14 +67,25 @@ class BilibiliFetcher(BaseFetcher):
         self._cookies: dict[str, str] | None = None
         self._last_space_at = 0.0
 
-    async def _space_throttle(self) -> None:
-        """空间接口有调用配额，两次之间强制冷却，避免 -799。"""
+    async def _space_throttle(self) -> bool:
+        """空间接口有调用配额，两次之间强制冷却，避免 -799。
+
+        返回 False 表示前面还有别人在排队、这轮轮不到：此时不要干等，
+        让上层直接走「搜索作者名 + 按 mid 过滤」的兜底路径。
+        4 个 B站博主串着等 8 秒冷却是 30 秒起步，用户根本等不了；
+        搜索接口风控宽松，同样能拿到这位 UP 的最新投稿。
+        """
         import time
 
         gap = time.monotonic() - self._last_space_at
         if 0 < gap < _SPACE_COOLDOWN:
-            await asyncio.sleep(_SPACE_COOLDOWN - gap)
+            wait = _SPACE_COOLDOWN - gap
+            if wait > _SPACE_MAX_WAIT:
+                logger.debug(f"[yys-guide] B站空间接口还要排 {wait:.1f}s，这次改走搜索兜底")
+                return False
+            await asyncio.sleep(wait)
         self._last_space_at = time.monotonic()
+        return True
 
     @staticmethod
     def _vlist(data: Any) -> list[dict[str, Any]]:
@@ -113,7 +127,9 @@ class BilibiliFetcher(BaseFetcher):
 
     # ---------------- 按博主 ----------------
 
-    async def fetch_author(self, target: dict[str, Any], limit: int) -> list[GuideItem]:
+    async def fetch_author(self, target: dict[str, Any], limit: int,
+        keywords: list[str] | None = None,
+    ) -> list[GuideItem]:
         mid = str(target.get("mid") or "").strip()
         if not mid.isdigit():
             logger.warning(f"[yys-guide] B站博主 mid 无效：{mid!r}，已跳过")
@@ -185,7 +201,8 @@ class BilibiliFetcher(BaseFetcher):
 
         data: Any = None
         # 优先走不带 wbi 的旧接口：游客态可用，风控明显更松
-        await self._space_throttle()
+        if not await self._space_throttle():
+            return []
         try:
             data = await self.client.get_json(
                 _SPACE_VIDEO_PLAIN_URL,
@@ -199,7 +216,8 @@ class BilibiliFetcher(BaseFetcher):
 
         if not ((data or {}).get("code") == 0 and self._vlist(data)):
             # 降级：wbi 签名版（有登录 Cookie 时更稳）
-            await self._space_throttle()
+            if not await self._space_throttle():
+                return []
             params = {
                 "mid": mid,
                 "ps": size,

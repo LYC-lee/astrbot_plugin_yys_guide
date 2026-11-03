@@ -58,7 +58,9 @@ class DouyinFetcher(BaseFetcher):
         item = await self._fetch_meta(aweme_id)
         return item or self._link_only(f"https://www.douyin.com/video/{aweme_id}", aweme_id)
 
-    async def fetch_author(self, target: dict[str, Any], limit: int) -> list[GuideItem]:
+    async def fetch_author(self, target: dict[str, Any], limit: int,
+        keywords: list[str] | None = None,
+    ) -> list[GuideItem]:
         # 主页作品列表需要签名，这里只在配置里给了作品链接时解析单条
         url = str(target.get("url") or target.get("share_url") or "").strip()
         if not url:

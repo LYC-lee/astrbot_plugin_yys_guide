@@ -74,7 +74,9 @@ class NgaFetcher(BaseFetcher):
 
     # ---------------- 抓取 ----------------
 
-    async def fetch_author(self, target: dict[str, Any], limit: int) -> list[GuideItem]:
+    async def fetch_author(self, target: dict[str, Any], limit: int,
+        keywords: list[str] | None = None,
+    ) -> list[GuideItem]:
         # NGA 不提供游客可用的作者检索，退化成按话题抓版块
         topic = (target.get("name") or "").strip()
         return await self.search(topic or "阴阳师", limit)

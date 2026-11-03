@@ -112,6 +112,20 @@ class HttpClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def post_json(
+        self,
+        url: str,
+        payload: Any,
+        *,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ) -> Any:
+        resp = await self.request(
+            "POST", url, headers=headers, json=payload, cookies=cookies
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def get_cookies(self, url: str) -> dict[str, str]:
         """访问一次首页，把 Set-Cookie 收下来（B站/NGA 的游客态靠这个）。"""
         client = await self._ensure_client()

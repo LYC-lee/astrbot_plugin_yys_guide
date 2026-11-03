@@ -67,7 +67,7 @@ def _data_dir() -> str:
     PLUGIN_NAME,
     "yys-guide",
     "阴阳师攻略助手：关键词触发，自动抓取博主攻略（网易大神/B站/NGA/微博/抖音）并整理成结构化卡片",
-    "1.2.0",
+    "1.3.0",
     "https://github.com/LYC-lee/astrbot_plugin_yys_guide",
 )
 class YysGuidePlugin(Star):
@@ -110,6 +110,7 @@ class YysGuidePlugin(Star):
     def _build_fetchers(self) -> dict[str, Any]:
         cookies = self._cfg("cookies", {}) or {}
         search = self._cfg("search", {}) or {}
+        ds163 = self._cfg("ds163", {}) or {}
         shared = {
             "bilibili": cookies.get("bilibili", ""),
             "weibo": cookies.get("weibo", ""),
@@ -118,6 +119,8 @@ class YysGuidePlugin(Star):
             "douyin_mode": self._cfg("douyin_mode", "try_meta"),
             "engine": search.get("engine", "so360"),
             "searxng_url": search.get("searxng_url", ""),
+            "ds163_scan_pages": ds163.get("scan_pages", 4),
+            "ds163_scan_days": ds163.get("scan_days", 180),
         }
         return {
             "bilibili": BilibiliFetcher(self._http, shared),
@@ -593,19 +596,26 @@ class YysGuidePlugin(Star):
         self, topic: str, keywords: "aliases.Keywords", limit: int
     ) -> tuple[list[GuideItem], str]:
         per_source = max(2, limit)
-        # 博主那边多拿一点：大神主页固定返回 9 条，B站翻页也便宜，
+        # 博主那边多拿一点：B站翻页便宜，大神现在也能翻历史了，
         # 多拿才有机会在里面翻到一条真的讲「魂土」的。
         author_limit = max(per_source, int(self._cfg("author_fetch_limit", 12)))
 
-        author_items, notice = await self._fetch_authors(author_limit)
+        # 把强词交给抓取器：大神据此决定要不要往回翻页找历史内容。
+        # 只给强词，别把「阵容」「攻略」这种意图词递下去，不然翻页永远命不中要害。
+        author_items, notice = await self._fetch_authors(
+            author_limit, list(keywords.strong) if keywords else None
+        )
         strict = bool(self._cfg("strict_relevance", True))
         author_pool = (
             self._relevant_only(author_items, keywords) if strict else author_items
         )
 
-        # 博主近期发的内容够用就直接返回，不再打搜索接口
+        # 博主那边的内容够用就直接返回，不再打搜索接口。
+        # 注意这里必须自己排一次序：抓取是并发的，谁先回来谁排在前面，
+        # 不排序的话「取前 5 条」等于「最早返回的那位博主霸榜」。
         if len(author_pool) >= limit:
-            return author_pool[:limit], ""
+            ordered = self._sort_items(author_pool, keywords)
+            return self._balance_authors(ordered, limit), ""
 
         if author_items and not author_pool:
             logger.debug(f"[yys-guide] 博主近期没有「{keywords.label}」相关内容，转向站内搜索")
@@ -618,7 +628,9 @@ class YysGuidePlugin(Star):
             logger.debug(f"[yys-guide] 过滤掉 {dropped} 条营销/无关内容")
         return combined, notice
 
-    async def _fetch_authors(self, limit: int) -> tuple[list[GuideItem], str]:
+    async def _fetch_authors(
+        self, limit: int, keywords: list[str] | None = None
+    ) -> tuple[list[GuideItem], str]:
         """返回 (条目, 提示语)。提示语非空表示博主接口这次没拿到东西。"""
         targets = self._cfg("core_authors", []) or []
         if not isinstance(targets, list):
@@ -643,7 +655,11 @@ class YysGuidePlugin(Star):
                 skipped_no_cookie += 1
                 continue
             label = target.get("name") or target.get("mid") or target.get("uid") or platform
-            tasks.append(fetcher.safe(fetcher.fetch_author(target, limit), f"博主 {label}"))
+            tasks.append(
+                fetcher.safe(
+                    fetcher.fetch_author(target, limit, keywords), f"博主 {label}"
+                )
+            )
 
         if skipped_no_cookie and not self._warned_weibo:
             self._warned_weibo = True
@@ -655,16 +671,33 @@ class YysGuidePlugin(Star):
         if not tasks:
             return [], ""
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 边收边判断：已经拿到够用的相关条目就取消还没回来的博主。
+        # B站四个博主共用一个空间接口配额，排队能排 20 秒；而卡片最多 5 条，
+        # 大神的图文那边通常 2~3 秒就能给出答案，没必要陪着干等。
         items: list[GuideItem] = []
         succeeded = 0
-        for result in results:
+        words = [w.lower() for w in (keywords or []) if w]
+        goal = max(2, min(limit, 5))
+        pending = {asyncio.ensure_future(coro): idx for idx, coro in enumerate(tasks)}
+
+        for future in asyncio.as_completed(list(pending)):
+            try:
+                result = await future
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[yys-guide] 博主抓取异常：{exc!r}")
+                continue
             if isinstance(result, list):
                 items.extend(result)
                 if result:
                     succeeded += 1
-            elif isinstance(result, Exception):
-                logger.warning(f"[yys-guide] 博主抓取异常：{result!r}")
+
+            if words and sum(
+                1 for it in items if any(w in it.title.lower() for w in words)
+            ) >= goal:
+                for task in pending:
+                    if not task.done():
+                        task.cancel()
+                break
 
         notice = ""
         if not succeeded:

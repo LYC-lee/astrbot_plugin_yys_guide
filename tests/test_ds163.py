@@ -266,6 +266,135 @@ else:
     asyncio.run(_live())
 
 
+# ------------------------------------------------ 6. JSON 接口解析与翻页
+
+print("\n=== 6. JSON 接口（翻历史）===")
+
+
+def _feed(fid: str, text: str, ts: int, *, title: str = "", rtype: int = 2,
+          nick: str = "槐夏三十", topics: list[str] | None = None) -> dict:
+    body: dict = {"text": text, "media": []}
+    if title:
+        body["title"] = title
+    return {
+        "id": fid,
+        "uid": "a9724e98c1cb4a4e931ebc3f467ea73d",
+        "type": rtype,
+        "createTime": ts,
+        "feedContent": {"type": rtype, "body": body},
+        "appRole": '{"nick":"%s"}' % nick,
+        "topicInfoList": [{"topicName": t} for t in (topics or [])],
+    }
+
+
+_f = Ds163Fetcher(HttpClient())
+
+# 毫秒时间戳：2026-11-03 23:00 北京时间
+_ts = 1793718000000
+
+_plain = _f.parse_api_feed(_feed("6ae9f820ca8643644ac44fa3", "【秘闻副本】荒川百战挂机思路\n 🌟正文", _ts), "u")
+check("普通动态能解析", _plain is not None)
+check("首行当标题", _plain is not None and _plain.title == "【秘闻副本】荒川百战挂机思路", _plain.title if _plain else "")
+check("毫秒时间戳换算正确", _plain is not None and _plain.published.strftime("%m-%d %H") == "11-03 23", str(_plain.published) if _plain else "")
+check("作者取自 appRole", _plain is not None and _plain.author == "槐夏三十", _plain.author if _plain else "")
+
+_long = _f.parse_api_feed(
+    _feed("6adc11e469a7294ae34dc2b5", "🌟PVE方面包含：魂十、魂土、魂王、魂海", _ts,
+          title="【咲耶版本】PVE阵容攻略和PVP阵容攻略合集", rtype=6, nick=""),
+    "u",
+)
+check("长文有独立 title", _long is not None and _long.title.startswith("【咲耶版本】"), _long.title if _long else "")
+check("长文标题不误用正文首行", _long is not None and "魂十" not in _long.title, _long.title if _long else "")
+check("长文正文进摘要", _long is not None and "魂土" in _long.digest, _long.digest[:30] if _long else "")
+
+check("没有正文的帖子跳过", _f.parse_api_feed(_feed("6ae9f820ca8643644ac44fa3", "   ", _ts), "u") is None)
+check("id 不合法跳过", _f.parse_api_feed(_feed("bad-id", "正文", _ts), "u") is None)
+
+
+class _FakeClient:
+    """按调用次数依次返回预设页，同时记录请求体。"""
+
+    def __init__(self, pages: list[dict]):
+        self.pages = pages
+        self.calls: list[dict] = []
+
+    async def post_json(self, url: str, payload: dict, **_kw) -> dict:
+        self.calls.append(dict(payload))
+        idx = len(self.calls) - 1
+        if idx < len(self.pages):
+            return self.pages[idx]
+        return {"code": 200, "result": {"feeds": []}}
+
+
+def _page(feeds: list[dict]) -> dict:
+    return {"code": 200, "result": {"feeds": feeds}}
+
+
+async def _paging_cases() -> None:
+    import yys_fetchers.ds163 as mod
+
+    old_gap = mod._PAGE_GAP
+    mod._PAGE_GAP = 0  # 测试里别真等
+    try:
+        # 第 1 页没命中，命中在第 2 页：应该自动翻页，并把游标传下去
+        page1 = [
+            _feed("aaaaaaaaaaaaaaaaaaaaaaaa", "葛叶削弱方案", _ts),
+            _feed("bbbbbbbbbbbbbbbbbbbbbbbb", "荒川百战挂机", _ts - 3600_000),
+        ]
+        page2 = [
+            _feed("cccccccccccccccccccccccc", "【魂土】双白蛋11s阵容", _ts - 7200_000),
+            _feed("dddddddddddddddddddddddd", "魂土带萌新", _ts - 9000_000),
+            _feed("eeeeeeeeeeeeeeeeeeeeeeee", "魂土鬼使黑无SSR", _ts - 9000_100),
+        ]
+        client = _FakeClient([_page(page1), _page(page2)])
+        got = await Ds163Fetcher(client, {"ds163_scan_pages": 4})._fetch_api(
+            "u", 5, ["魂土"], 4, "测试"
+        )
+        check("翻到命中就停在第 2 页", len(client.calls) == 2, f"请求 {len(client.calls)} 次")
+        check("第 2 页带 maxTime 游标", client.calls[1].get("maxTime") == _ts - 3600_000,
+              str(client.calls[1]))
+        check("两页内容都在", got is not None and len(got) == 5, str(len(got or [])))
+        check(
+            "命中 3 条",
+            got is not None
+            and sum(1 for i in got if "魂土" in i.title) == 3,
+            str([i.title for i in got or []]),
+        )
+
+        # 第 1 页就够 3 条命中：不该再翻第 2 页
+        rich = [
+            _feed("e" * 24, "魂土阵容A", _ts),
+            _feed("f" * 24, "魂土阵容B", _ts - 1000),
+            _feed("1" * 24, "魂土阵容C", _ts - 2000),
+        ]
+        client = _FakeClient([_page(rich)])
+        await Ds163Fetcher(client, {})._fetch_api("u", 12, ["魂土"], 4, "测试")
+        check("命中够数不翻页", len(client.calls) == 1, f"请求 {len(client.calls)} 次")
+
+        # 没有关键词：只取第一页
+        client = _FakeClient([_page(page1), _page(page2)])
+        await Ds163Fetcher(client, {})._fetch_api("u", 12, None, 4, "测试")
+        check("无关键词只请求一次", len(client.calls) == 1, f"请求 {len(client.calls)} 次")
+
+        # 接口报错 → 返回 None，让上层退回 HTML
+        client = _FakeClient([{"code": 500, "errmsg": "boom"}])
+        bad = await Ds163Fetcher(client, {})._fetch_api("u", 5, ["魂土"], 4, "测试")
+        check("接口异常返回 None", bad is None, str(bad))
+
+        # 翻到时间窗口之外就停
+        old_ts = _ts - 400 * 86400_000
+        client = _FakeClient([_page([_feed("9" * 24, "很久以前", old_ts)])])
+        await Ds163Fetcher(client, {"ds163_scan_days": 180})._fetch_api(
+            "u", 5, ["魂土"], 4, "测试"
+        )
+        check("超出时间窗口不继续翻", len(client.calls) == 1, f"请求 {len(client.calls)} 次")
+    finally:
+        mod._PAGE_GAP = old_gap
+
+
+asyncio.run(_paging_cases())
+
+
 # ---------------------------------------------------------------- 汇总
 
 print(f"\n{'=' * 40}")

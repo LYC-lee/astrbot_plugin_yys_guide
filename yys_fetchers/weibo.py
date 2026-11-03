@@ -117,7 +117,9 @@ class WeiboFetcher(BaseFetcher):
 
     # ---------------- 按博主 ----------------
 
-    async def fetch_author(self, target: dict[str, Any], limit: int) -> list[GuideItem]:
+    async def fetch_author(self, target: dict[str, Any], limit: int,
+        keywords: list[str] | None = None,
+    ) -> list[GuideItem]:
         uid = str(target.get("uid") or "").strip()
         if not uid.isdigit():
             logger.warning(f"[yys-guide] 微博 uid 无效：{uid!r}（需要数字 uid），已跳过")
