@@ -16,6 +16,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from yys_core import teamcode
 from yys_core.models import GuideItem, fmt_human_time, one_line, source_label
 
 
@@ -32,6 +33,9 @@ class CardEntry:
     souls: str = ""
     howto: str = ""
     note: str = ""
+    # 阵容码（|TA|开头那串）。不交给模型提炼：它经常整串抄错，
+    # 而错一个字符游戏就导不进去，所以直接从原文正则提取。
+    codes: list[str] = field(default_factory=list)
     degraded: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -59,6 +63,7 @@ SYSTEM_PROMPT = """你是《阴阳师》资深攻略编辑，擅长把一手攻�
    - souls：御魂配置，如「须佐：狂骨 4 + 鬼灵歌伎 2」
    - howto：打法要点，1-2 句，写清楚起手、节奏、关键操作
    - note：注意事项或前提条件（练度、皮肤、版本限制），没有就空字符串
+   - 原文里「|TA|」开头的那串阵容码不要抄进任何字段，程序会单独提取。
 3. 输出必须是纯 JSON 数组，不要 ```json 包裹，不要任何解释文字。
 4. 数组长度与输入条目数一致，顺序也保持一致。
 """
@@ -188,7 +193,9 @@ def rule_summarize(items: list[GuideItem]) -> list[CardEntry]:
     """
     entries: list[CardEntry] = []
     for item in items:
-        digest = one_line(item.digest or item.content, 160)
+        # 先抹掉正文里的码再截断：160 字截在码中间会剩半串，
+        # 用户复制了导入失败，还以为是插件把码弄错了。
+        digest = one_line(teamcode.strip_codes(item.digest or item.content), 160)
         entries.append(
             CardEntry(
                 title=one_line(item.title, 60),
@@ -197,6 +204,7 @@ def rule_summarize(items: list[GuideItem]) -> list[CardEntry]:
                 author=item.author,
                 published=item.published,
                 howto=digest,
+                codes=teamcode.extract_codes(item.title, item.digest, item.content),
                 degraded=True,
             )
         )
@@ -272,7 +280,12 @@ async def summarize(
             souls=str(data.get("souls") or "").strip(),
             howto=str(data.get("howto") or "").strip(),
             note=str(data.get("note") or "").strip(),
+            # 码从原文取，不用模型给的那份
+            codes=fallback[index].codes,
         )
+        # 模型偶尔无视提示词把码抄进字段，抄错一个字符就用不了，统一抹掉
+        for attr in ("team", "souls", "howto", "note"):
+            setattr(entry, attr, teamcode.strip_codes(getattr(entry, attr)))
         if not (entry.team or entry.souls or entry.howto or entry.note):
             # 模型这条基本没提炼出东西，用规则版本兜住
             entry.howto = fallback[index].howto

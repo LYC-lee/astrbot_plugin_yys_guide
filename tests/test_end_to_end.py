@@ -156,7 +156,15 @@ DEFAULT_CONFIG = {
         "item_max_chars": 1800,
         "llm_timeout": 40,
     },
-    "render": {"style": "card", "show_cover": False},
+    "render": {
+        "style": "card",
+        "show_cover": False,
+        "split_messages": True,
+        "items_per_message": 1,
+        "show_team_code": True,
+        "show_qr": True,
+        "max_qr": 2,
+    },
     "cache": {"ttl_minutes": 180, "max_rows": 2000},
     "warmup": {"enabled": False, "times": [], "push_umo": []},
     "cookies": {"bilibili": "", "weibo": "", "nga": ""},
@@ -184,9 +192,14 @@ async def run_case(name: str, context, text: str) -> list[str]:
         outputs.append(chunk)
 
     for chunk in outputs:
-        body = chunk.split(":", 1)[1]
-        print(f"\n--- 输出（{chunk[:5]}）---")
-        print(body)
+        if chunk.startswith("IMAGE:"):
+            print(f"\n--- 图片：{chunk.split(':', 1)[1]}")
+            continue
+        print("\n--- 文字消息 ---")
+        print(chunk.split(":", 1)[1])
+
+    texts = [o for o in outputs if o.startswith("TEXT:")]
+    print(f"\n共 {len(texts)} 条文字消息")
 
     await plugin.terminate()
     return outputs
@@ -198,19 +211,26 @@ async def main() -> None:
         "规则降级（真实抓取 B站 + 360）", NoLLMContext(), "阴阳师御魂怎么配"
     )
     assert outputs, "没有任何输出"
-    assert any(o.startswith("TEXT:") for o in outputs), "没有文本输出"
-    final = outputs[-1]
-    assert "阴阳师 · 御魂怎么配" in final, f"卡片标题不对：{final[:40]}"
-    assert "http" in final, "卡片里没有链接"
+    texts = [o for o in outputs if o.startswith("TEXT:")]
+    assert texts, "没有文本输出"
+    # 默认分段：进度一条 + 概况一条 + 每条攻略一条
+    assert len(texts) >= 2, f"应该分段发送，实际只有 {len(texts)} 条文字"
+    head = next((t for t in texts if "▎阴阳师" in t), "")
+    assert "阴阳师 · 御魂怎么配" in head, f"概况标题不对：{head[:40]}"
+    joined = "\n".join(t.split(":", 1)[1] for t in texts)
+    assert "http" in joined, "卡片里没有链接"
     print("\n[ok] 规则降级链路通过")
 
     print("\n\n### 场景 B：配了模型且返回合法 JSON")
     outputs = await run_case(
         "模型摘要（真实抓取 + 假模型返回）", FakeLLMContext(), "yys 魂土阵容推荐"
     )
-    final = outputs[-1]
-    assert "魂土阵容" in final, f"卡片标题应回显用户说法：{final[:40]}"
-    assert "狂骨" in final, "模型字段没渲染出来"
+    texts = [o for o in outputs if o.startswith("TEXT:")]
+    assert texts, "没有文本输出"
+    head = next((t for t in texts if "▎阴阳师" in t), "")
+    assert "魂土阵容" in head, f"概况标题应回显用户说法：{head[:40]}"
+    joined = "\n".join(t.split(":", 1)[1] for t in texts)
+    assert "狂骨" in joined, "模型字段没渲染出来"
     print("\n[ok] 模型摘要链路通过")
 
     print("\n\n### 场景 C：不相关的消息不应触发")

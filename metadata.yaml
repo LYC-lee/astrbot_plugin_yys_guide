@@ -1,6 +1,6 @@
 name: astrbot_plugin_yys_guide
 display_name: 阴阳师攻略助手
-desc: 关键词触发后自动抓取阴阳师博主最新攻略（网易大神/B站/NGA/微博/抖音），用大模型整理成结构化卡片，只给和问题相关的结果。问到具体内容会往回翻博主的历史攻略。带 SQLite 缓存与定时预热，大神与 B站无需 Cookie 即可使用。
-version: v1.3.0
+desc: 关键词触发后自动抓取阴阳师博主最新攻略（网易大神/B站/NGA/微博/抖音），用大模型整理成结构化卡片，分段发送、附阵容码与二维码，只给和问题相关的结果。问到具体内容会往回翻博主的历史攻略。带 SQLite 缓存与定时预热，大神与 B站无需 Cookie 即可使用。
+version: v1.4.0
 author: yys-guide
 repo: https://github.com/LYC-lee/astrbot_plugin_yys_guide

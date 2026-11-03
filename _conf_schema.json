@@ -344,6 +344,57 @@
         ],
         "hint": "QQ/微信建议用 card，Discord/Telegram/飞书可以用 markdown。"
       },
+      "split_messages": {
+        "description": "分段发送",
+        "type": "bool",
+        "default": true,
+        "hint": "把一条长卡片拆成「概况 + 每 N 条一条消息」。手机上不用滑好几屏，中途被刷屏也不至于找不到看哪儿。只对 card 风格生效。"
+      },
+      "items_per_message": {
+        "description": "每条消息装几条攻略",
+        "type": "int",
+        "default": 1,
+        "slider": {
+          "min": 1,
+          "max": 5,
+          "step": 1
+        },
+        "hint": "1 表示一条攻略一条消息，最清爽但消息条数多；调大可以少发几条消息。"
+      },
+      "show_team_code": {
+        "description": "显示阵容码",
+        "type": "bool",
+        "default": true,
+        "hint": "从原文里提取「|TA|」开头的阵容码，顶格单独成行方便长按复制，直接粘贴到游戏【式神录→阵容助手→阵容码】即可导入。博主没贴码的攻略不会显示这一行。"
+      },
+      "max_codes": {
+        "description": "每条最多显示几个阵容码",
+        "type": "int",
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 10,
+          "step": 1
+        },
+        "hint": "一条道馆/斗技攻略能贴 9 个甚至 27 个码，全列出来既长又不知道挑哪个。超出的会提示去原文看。"
+      },
+      "show_qr": {
+        "description": "附阵容码二维码",
+        "type": "bool",
+        "default": true,
+        "hint": "按提取到的文字码现画一张二维码，扫码即可导入。比扫博主截图里那张更稳（作者们普遍反馈截图要裁剪才能识别）。需要 qrcode 依赖，装不上会自动只发文字码。"
+      },
+      "max_qr": {
+        "description": "最多发几张二维码",
+        "type": "int",
+        "default": 2,
+        "slider": {
+          "min": 0,
+          "max": 5,
+          "step": 1
+        },
+        "hint": "一次查询可能有 5 条攻略都带码，全发会刷屏。0 表示不发。"
+      },
       "show_cover": {
         "description": "附带封面图",
         "type": "bool",

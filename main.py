@@ -26,7 +26,7 @@ from astrbot.api import AstrBotConfig, logger  # noqa: E402
 from astrbot.api.event import AstrMessageEvent, filter  # noqa: E402
 from astrbot.api.star import Context, Star, register  # noqa: E402
 
-from yys_core import aliases  # noqa: E402
+from yys_core import aliases, teamcode  # noqa: E402
 from yys_core.cache import GuideCache  # noqa: E402
 from yys_core.filters import filter_items  # noqa: E402
 from yys_core.http import HttpClient  # noqa: E402
@@ -37,7 +37,7 @@ from yys_core.models import (  # noqa: E402
     source_label,
     title_key,
 )
-from yys_core.render import pick_cover, render  # noqa: E402
+from yys_core.render import pick_cover, render, render_split  # noqa: E402
 from yys_core.scheduler import WarmupScheduler, parse_times  # noqa: E402
 from yys_core.summarize import summarize  # noqa: E402
 from yys_fetchers import (  # noqa: E402
@@ -67,7 +67,7 @@ def _data_dir() -> str:
     PLUGIN_NAME,
     "yys-guide",
     "阴阳师攻略助手：关键词触发，自动抓取博主攻略（网易大神/B站/NGA/微博/抖音）并整理成结构化卡片",
-    "1.3.0",
+    "1.4.0",
     "https://github.com/LYC-lee/astrbot_plugin_yys_guide",
 )
 class YysGuidePlugin(Star):
@@ -354,13 +354,32 @@ class YysGuidePlugin(Star):
 
             entries = rule_summarize(items)
 
-        text = render(
-            display,
-            entries,
-            str(self._cfg("render.style", "card")),
-            notice=notice,
-        )
-        yield event.plain_result(text)
+        now = datetime.now(CN_TZ)
+        style = str(self._cfg("render.style", "card") or "card")
+        show_codes = bool(self._cfg("render.show_team_code", True))
+        # 分段只对 card 风格做：markdown/plain 是给 Telegram、Discord 那类
+        # 支持富文本的渠道准备的，一屏能显示完，不需要拆。
+        split = bool(self._cfg("render.split_messages", True)) and style.lower() == "card"
+        per_message = max(1, int(self._cfg("render.items_per_message", 1)))
+        # 一条道馆攻略能贴 9 个码，全列出来用户也不知道挑哪个
+        max_codes = max(1, int(self._cfg("render.max_codes", 3)))
+
+        if split:
+            for chunk in render_split(
+                display, entries, per_message, now, notice, show_codes, max_codes
+            ):
+                yield event.plain_result(chunk)
+            qr_order = per_message
+        else:
+            yield event.plain_result(
+                render(display, entries, style, now, notice, show_codes, max_codes)
+            )
+            qr_order = 0
+
+        # 二维码紧跟在它的文字码后面：翻到哪条就扫哪条，不用回头找。
+        if show_codes and bool(self._cfg("render.show_qr", True)):
+            async for result in self._qr_results(event, entries, qr_order, max_codes):
+                yield result
 
         if bool(self._cfg("render.show_cover", False)):
             covers = pick_cover(entries, [item.cover for item in items])
@@ -370,6 +389,51 @@ class YysGuidePlugin(Star):
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"[yys-guide] 封面发送失败：{exc!r}")
                     break
+
+    async def _qr_results(
+        self,
+        event: AstrMessageEvent,
+        entries: list[Any],
+        per_message: int,
+        max_codes: int = 3,
+    ) -> AsyncGenerator[Any, None]:
+        """给带阵容码的条目画二维码。
+
+        只画文字码派生出来的码，不去识别博主截图里那张：
+        作者们普遍反馈「扫相册提示未识别到有效码，得先裁图」，
+        自己按文字码重画一张干净的反而更好扫，而且能保证码没错字。
+        """
+        budget = max(0, int(self._cfg("render.max_qr", 2)))
+        if budget <= 0:
+            return
+
+        directory = os.path.join(_data_dir(), "qr")
+        sent = 0
+        for index, entry in enumerate(entries, 1):
+            codes = list(getattr(entry, "codes", []) or [])
+            # 只画正文里实际展示出来的那几个，多画了也和文字对不上
+            for item in codes[:max_codes]:
+                if sent >= budget:
+                    return
+                code = getattr(item, "code", str(item))
+                label = getattr(item, "label", "")
+                path = await asyncio.to_thread(teamcode.qr_image, code, directory)
+                if not path:
+                    # 装不上 qrcode 就走这条路：文字码已经在正文里了，够用
+                    logger.info(
+                        "[yys-guide] 二维码生成不可用（缺 qrcode 依赖？），本次只发文字码"
+                    )
+                    return
+                # 一条消息里好几个码时，不给图配句话就对不上是哪一个
+                if per_message != 1 or len(codes) > 1:
+                    tag = f"（{label}）" if label else ""
+                    yield event.plain_result(f"第 {index} 条{tag}的阵容码，扫这个：")
+                try:
+                    yield event.image_result(path)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"[yys-guide] 二维码发送失败：{exc!r}")
+                    return
+                sent += 1
 
     async def _no_result_text(self, display: str, keywords: "aliases.Keywords") -> str:
         """一条相关的都没有时，说清楚查了哪儿、给出更具体的说法。
@@ -893,7 +957,11 @@ class YysGuidePlugin(Star):
         from yys_core.summarize import rule_summarize
 
         entries = rule_summarize(items)
-        text = render("今日更新", entries, str(self._cfg("render.style", "card")))
+        # 简报是主动推送到群里的，塞阵容码会把它撑得很长，
+        # 想看细节的人自己触发一次查询就行
+        text = render(
+            "今日更新", entries, str(self._cfg("render.style", "card")), show_codes=False
+        )
 
         from astrbot.api.event import MessageChain
 
