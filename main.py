@@ -26,7 +26,7 @@ from astrbot.api import AstrBotConfig, logger  # noqa: E402
 from astrbot.api.event import AstrMessageEvent, filter  # noqa: E402
 from astrbot.api.star import Context, Star, register  # noqa: E402
 
-from yys_core import aliases, teamcode  # noqa: E402
+from yys_core import aliases, teamcode, teamqr  # noqa: E402
 from yys_core.cache import GuideCache  # noqa: E402
 from yys_core.filters import filter_items  # noqa: E402
 from yys_core.http import HttpClient  # noqa: E402
@@ -381,7 +381,7 @@ class YysGuidePlugin(Star):
         carded = False
         if bool(self._cfg("render.image_card", True)) and style.lower() == "card":
             async for result in self._image_card_results(
-                event, display, entries, now, show_codes, max_codes
+                event, display, entries, items, now, show_codes, max_codes
             ):
                 yield result
             carded = True
@@ -402,7 +402,7 @@ class YysGuidePlugin(Star):
                 yield result
                 forwarded = True
 
-        qr_order = per_message
+        qr_order = 0
         if not carded and not forwarded:
             if split:
                 for chunk in render_split(
@@ -413,15 +413,6 @@ class YysGuidePlugin(Star):
                 yield event.plain_result(
                     render(display, entries, style, now, notice, show_codes, max_codes)
                 )
-                qr_order = 0
-
-            # 二维码紧跟在它的文字码后面：翻到哪条就扫哪条，不用回头找。
-            # 走合并转发时图已经塞进节点里了，这里不重复发。
-            if show_codes and bool(self._cfg("render.show_qr", True)):
-                async for result in self._qr_results(
-                    event, entries, qr_order, max_codes
-                ):
-                    yield result
 
         if bool(self._cfg("render.show_cover", False)):
             covers = pick_cover(entries, [item.cover for item in items])
@@ -437,6 +428,7 @@ class YysGuidePlugin(Star):
         event: AstrMessageEvent,
         display: str,
         entries: list[Any],
+        items: list[Any],
         generated_at: datetime,
         show_codes: bool,
         max_codes: int,
@@ -465,11 +457,24 @@ class YysGuidePlugin(Star):
             and int(self._cfg("render.max_qr", 2)) > 0
         )
         qr_dir = os.path.join(_data_dir(), "qr")
-        avatar_dir = os.path.join(_data_dir(), "avatars")
+        # 用户自己塞的头像优先，插件自带的 assets/avatars 兜底
+        avatar_dirs = [
+            os.path.join(_data_dir(), "avatars"),
+            os.path.join(_PLUGIN_DIR, "assets", "avatars"),
+        ]
         out_dir = os.path.join(_data_dir(), "cards")
         stamp = generated_at.astimezone(CN_TZ).strftime("%m-%d %H:%M")
         # 图是按标题哈希存盘的，长期跑会攒下来，发之前顺手清一次
         await asyncio.to_thread(prune_cards, out_dir)
+
+        # 攻略原文里的图，按 url 索引：阵容二维码得从原图里解出来
+        item_images: dict[str, list[str]] = {}
+        for item in items or []:
+            meta = getattr(item, "meta", {}) or {}
+            images = list(meta.get("images") or [])
+            if not images and getattr(item, "cover", ""):
+                images = [item.cover]
+            item_images[getattr(item, "url", "")] = images
 
         drawn = 0
         rest: list[Any] = []
@@ -484,12 +489,12 @@ class YysGuidePlugin(Star):
             if codes and show_codes:
                 code = str(getattr(codes[0], "code", "") or "")
             qr_path = None
-            if code and draw_qr:
-                qr_path = await asyncio.to_thread(teamcode.qr_image, code, qr_dir)
+            if draw_qr:
+                qr_path = await self._team_qr(entry, item_images)
 
             path = await asyncio.to_thread(
                 render_card_image, entry, index, total, qr_path, code,
-                avatar_dir, out_dir, stamp,
+                avatar_dirs, out_dir, stamp,
             )
             if not path:
                 # 缺 Pillow / 没有中文字体之类：整批退回文字卡，
@@ -526,6 +531,29 @@ class YysGuidePlugin(Star):
             codes_text = render_code_list(entries, max_codes)
             if codes_text:
                 yield event.plain_result(codes_text)
+
+    async def _team_qr(
+        self, entry: Any, item_images: dict[str, list[str]]
+    ) -> str | None:
+        """找博主原图里的游戏阵容二维码，解出来重画一张干净的。
+
+        不能拿 `|TA|` 文字码自己画一张：那串只有 36 个字符，扫出来是纯文本，
+        游戏不认。真正的二维码装的是 `#TA#` 开头的压缩数据（四百多字节），
+        只能从博主原图里解码拿到，再原样重画。
+        """
+        urls = item_images.get(getattr(entry, "url", ""), [])
+        if not urls:
+            return None
+        payload = await teamqr.find_payload(self._http, urls)
+        if not payload:
+            logger.debug(
+                "[yys-guide] 原文配图里没有阵容二维码：%s",
+                str(getattr(entry, "title", ""))[:20],
+            )
+            return None
+        return await asyncio.to_thread(
+            teamqr.render_payload, payload, os.path.join(_data_dir(), "qr")
+        )
 
     @staticmethod
     def _forward_supported(event: AstrMessageEvent) -> bool:
@@ -578,7 +606,7 @@ class YysGuidePlugin(Star):
         调用方据此回落到分段发送——不能因为一个装饰性功能让用户看空回复。
         """
         try:
-            from astrbot.api.message_components import Image, Node, Nodes, Plain
+            from astrbot.api.message_components import Node, Nodes, Plain
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"[yys-guide] 当前 AstrBot 没有 Node/Nodes，改用分段发送：{exc!r}")
             return None
@@ -589,89 +617,17 @@ class YysGuidePlugin(Star):
         name = str(self._cfg("render.forward_name", "阴阳师攻略") or "阴阳师攻略")
         uin = self._self_id(event)
 
-        budget = 0
-        if (
-            show_codes
-            and bool(self._cfg("render.forward_qr", True))
-            and bool(self._cfg("render.show_qr", True))
-        ):
-            budget = max(0, int(self._cfg("render.max_qr", 2)))
-        directory = os.path.join(_data_dir(), "qr")
-
-        chain: list[Any] = []
-        for node in nodes:
-            parts: list[Any] = [Plain(node.text)]
-            # 一条只配一张图，对应它第一个码。合集里塞三张图，
-            # 用户点开看到三团黑白方块，也对不上是哪个阵容。
-            for item in node.codes[:1]:
-                if budget <= 0:
-                    break
-                code = getattr(item, "code", str(item))
-                path = await asyncio.to_thread(teamcode.qr_image, code, directory)
-                if not path:
-                    # 缺 qrcode 依赖：文字码已经在正文里了，不影响使用
-                    logger.info("[yys-guide] 二维码生成不可用，合集里只放文字码")
-                    budget = 0
-                    break
-                try:
-                    parts.append(Image.fromFileSystem(path))
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug(f"[yys-guide] 合集内嵌图片失败：{exc!r}")
-                    budget = 0
-                    break
-                budget -= 1
-            chain.append(Node(content=parts, name=name, uin=uin))
+        # 合集里只放文字：二维码是游戏生成的，得从原文配图里解，
+        # 那个逻辑放在图片卡那边（_team_qr），这里硬塞只会塞错图。
+        chain: list[Any] = [
+            Node(content=[Plain(node.text)], name=name, uin=uin) for node in nodes
+        ]
 
         try:
             return event.chain_result([Nodes(chain)])
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[yys-guide] 合并转发组装失败，改成分段发送：{exc!r}")
             return None
-
-    async def _qr_results(
-        self,
-        event: AstrMessageEvent,
-        entries: list[Any],
-        per_message: int,
-        max_codes: int = 3,
-    ) -> AsyncGenerator[Any, None]:
-        """给带阵容码的条目画二维码。
-
-        只画文字码派生出来的码，不去识别博主截图里那张：
-        作者们普遍反馈「扫相册提示未识别到有效码，得先裁图」，
-        自己按文字码重画一张干净的反而更好扫，而且能保证码没错字。
-        """
-        budget = max(0, int(self._cfg("render.max_qr", 2)))
-        if budget <= 0:
-            return
-
-        directory = os.path.join(_data_dir(), "qr")
-        sent = 0
-        for index, entry in enumerate(entries, 1):
-            codes = list(getattr(entry, "codes", []) or [])
-            # 只画正文里实际展示出来的那几个，多画了也和文字对不上
-            for item in codes[:max_codes]:
-                if sent >= budget:
-                    return
-                code = getattr(item, "code", str(item))
-                label = getattr(item, "label", "")
-                path = await asyncio.to_thread(teamcode.qr_image, code, directory)
-                if not path:
-                    # 装不上 qrcode 就走这条路：文字码已经在正文里了，够用
-                    logger.info(
-                        "[yys-guide] 二维码生成不可用（缺 qrcode 依赖？），本次只发文字码"
-                    )
-                    return
-                # 一条消息里好几个码时，不给图配句话就对不上是哪一个
-                if per_message != 1 or len(codes) > 1:
-                    tag = f"（{label}）" if label else ""
-                    yield event.plain_result(f"第 {index} 条{tag}的阵容码，扫这个：")
-                try:
-                    yield event.image_result(path)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug(f"[yys-guide] 二维码发送失败：{exc!r}")
-                    return
-                sent += 1
 
     async def _no_result_text(self, display: str, keywords: "aliases.Keywords") -> str:
         """一条相关的都没有时，说清楚查了哪儿、给出更具体的说法。

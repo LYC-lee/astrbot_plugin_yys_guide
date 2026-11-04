@@ -200,6 +200,64 @@ def test_render_no_avatar_dir() -> None:
         check("缺头像目录不崩", bool(path))
 
 
+# ------------------------------------------------------------------ 头像
+
+
+def _make_avatar(directory: str, name: str, color=(200, 60, 60)) -> None:
+    from PIL import Image
+
+    os.makedirs(directory, exist_ok=True)
+    Image.new("RGBA", (160, 160), color + (255,)).save(
+        os.path.join(directory, f"{name}.webp"), "WEBP"
+    )
+
+
+def test_avatar_multi_dir() -> None:
+    """用户自己的头像目录优先，插件自带的兜底。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        user = os.path.join(tmp, "user")
+        bundled = os.path.join(tmp, "bundled")
+        _make_avatar(user, "大天狗")
+        _make_avatar(bundled, "神无月")
+        img, _ = card_image._avatar("大天狗", 80, [user, bundled])
+        check("优先用用户目录", img.getpixel((40, 40))[0] > 150, str(img.getpixel((40, 40))))
+        img2, _ = card_image._avatar("神无月", 80, [user, bundled])
+        check("回落到自带目录", img2.size == (80, 80))
+
+
+def test_avatar_sp_alias() -> None:
+    """SP 简称要落到正式名，不能命中同名 SSR。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _make_avatar(tmp, "缘结神", (10, 10, 10))
+        _make_avatar(tmp, "纺愿缘结神", (250, 250, 250))
+        img, _ = card_image._avatar("SP缘结神", 60, [tmp])
+        pixel = img.getpixel((30, 30))
+        check("SP 用正式名头像", pixel[0] > 200, str(pixel))
+
+
+def test_avatar_missing_falls_back() -> None:
+    """名字对不上就画占位圆，不能崩，也不能返回空图。"""
+    img, mask = card_image._avatar("完全不存在的式神名", 64, ["/nonexistent"])
+    check("占位圆尺寸正确", img.size == (64, 64) and mask.size == (64, 64))
+
+
+def test_avatar_transparent_edges() -> None:
+    """透明底头像要合到白底，否则圆裁后边缘发黑。"""
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(tmp, exist_ok=True)
+        img = Image.new("RGBA", (120, 120), (0, 0, 0, 0))
+        # 中间画一块不透明的
+        for x in range(40, 80):
+            for y in range(40, 80):
+                img.putpixel((x, y), (30, 120, 200, 255))
+        img.save(os.path.join(tmp, "透明式神.webp"), "WEBP")
+        got, _ = card_image._avatar("透明式神", 60, [tmp])
+        corner = got.getpixel((2, 2))
+        check("透明处铺成白色", min(corner) > 240, str(corner))
+
+
 # ------------------------------------------------------------------ 文字码
 
 

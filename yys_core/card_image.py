@@ -50,7 +50,31 @@ DEEP_BG = (20, 30, 52)
 
 #: 头像目录里放 <式神名>.png 就会用真图，没有就用配色圆占位。
 #: 素材涉及版权，插件不内置，留个口子让人自己丢进去。
-AVATAR_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+AVATAR_EXTS = (".png", ".webp", ".jpg", ".jpeg")
+
+#: 卡片里的式神名常带稀有度前缀（「SP缘结神」），文件名一般不带。
+#: 去掉前缀再找一遍，能多命中不少；找不到再退回配色圆。
+_SP_PREFIX = re.compile(r"^(SP|UR|SSR|SR|R)\s*", re.IGNORECASE)
+
+#: SP/UR 简称 -> 正式名，由 tools/build_sp_alias.py 从 wiki 重定向生成。
+#: 「SP缘结神」直接去掉前缀会命中同名 SSR 的头像，所以先查这张表。
+_ALIAS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "sp_alias.json"
+)
+_ALIAS_CACHE: dict[str, str] | None = None
+
+
+def _sp_alias() -> dict[str, str]:
+    global _ALIAS_CACHE
+    if _ALIAS_CACHE is None:
+        try:
+            import json
+
+            with open(_ALIAS_PATH, encoding="utf-8") as fh:
+                _ALIAS_CACHE = json.load(fh)
+        except Exception:  # noqa: BLE001
+            _ALIAS_CACHE = {}
+    return _ALIAS_CACHE
 
 #: 占位头像的底色，按名字取，保证同一个式神每次颜色一样。
 _AVATAR_COLORS = [
@@ -273,24 +297,50 @@ def _note_lines(entry: Any, howto: str = "") -> list[str]:
 # ---------------------------------------------------------------- 头像
 
 
-def _avatar(name: str, size: int, directory: str):
+def _avatar(name: str, size: int, directories):
+    """按式神名找头像；找不到就画个配色圆兜底。
+
+    directories 可以是单个目录，也可以是列表——用户自己放在
+    data/avatars 里的图优先，插件自带的 assets/avatars 兜底。
+    """
     from PIL import Image, ImageDraw
 
-    for ext in AVATAR_EXTS:
-        path = os.path.join(directory, f"{name}{ext}")
-        if not os.path.exists(path):
+    if isinstance(directories, str):
+        directories = [directories]
+    candidates = [name]
+    alias = _sp_alias().get(name)
+    if alias:
+        # 有官方正式名就只认它：SP缘结神 -> 纺愿缘结神。
+        # 不能退回去前缀（那会命中同名 SSR 的脸），对不上就用占位圆。
+        candidates.append(alias)
+    else:
+        stripped = _SP_PREFIX.sub("", name).strip()
+        if stripped and stripped != name:
+            candidates.append(stripped)
+
+    for directory in directories:
+        if not directory:
             continue
-        try:
-            img = Image.open(path).convert("RGB")
-            w, h = img.size
-            side = min(w, h)
-            img = img.crop(((w - side) // 2, 0, (w - side) // 2 + side, side))
-            img = img.resize((size, size), Image.Resampling.LANCZOS)
-            mask = Image.new("L", (size, size), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
-            return img, mask
-        except Exception:  # noqa: BLE001
-            continue
+        for candidate in candidates:
+            for ext in AVATAR_EXTS:
+                path = os.path.join(directory, f"{candidate}{ext}")
+                if not os.path.exists(path):
+                    continue
+                try:
+                    img = Image.open(path).convert("RGBA")
+                    w, h = img.size
+                    side = min(w, h)
+                    img = img.crop(((w - side) // 2, (h - side) // 2, (w - side) // 2 + side,
+                                    (h - side) // 2 + side))
+                    img = img.resize((size, size), Image.Resampling.LANCZOS)
+                    # 头像多是透明底：不合到白底的话，圆裁完边缘会发黑
+                    base = Image.new("RGB", (size, size), (255, 255, 255))
+                    base.paste(img, mask=img.split()[-1])
+                    mask = Image.new("L", (size, size), 0)
+                    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+                    return base, mask
+                except Exception:  # noqa: BLE001
+                    continue
 
     # 没素材就画个配色圆 + 名字头一个字。比起空白圆，能让人一眼数清几个式神。
     color = _AVATAR_COLORS[int(hashlib.md5(name.encode()).hexdigest(), 16) % len(_AVATAR_COLORS)]
@@ -462,11 +512,10 @@ def render_card_image(
                 img, mask = _avatar(slot.name, avatar, avatar_dir)
                 px = cx - avatar // 2
                 canvas.paste(img, (px, y), mask)
-                # 双圈：外面浅灰压边，里面一道白环，跟攻略图里的头像框一个意思
+                # 只压一圈极浅的边，把圆和白色卡片分开即可。
+                # 真头像本身有画面，描粗边会显得像贴了个相框。
                 draw.ellipse((px, y, px + avatar, y + avatar),
-                             outline=(206, 214, 228), width=3)
-                draw.ellipse((px + 5, y + 5, px + avatar - 5, y + avatar - 5),
-                             outline=(255, 255, 255), width=2)
+                             outline=(228, 231, 238), width=2)
 
                 label = _ellipsis(draw, slot.name, name_font, col_w - 12)
                 lw = _text_w(draw, label, name_font)
@@ -547,7 +596,7 @@ def render_card_image(
         has_qr = bool(qr_path and os.path.exists(qr_path))
         if has_qr or code:
             y += 6
-            block_h = 322 if has_qr else 156
+            block_h = 340 if has_qr else 156
             draw.rounded_rectangle((MARGIN, y, WIDTH - MARGIN, y + block_h),
                                    radius=14, fill=DEEP_BG)
             left_w = inner - (330 if has_qr else 0)
@@ -575,7 +624,9 @@ def render_card_image(
                           fill=(255, 226, 150))
 
             if has_qr:
-                qr_size = 244
+                # 二维码里是四百多字节的阵容数据，格子密；
+                # 缩太小（200 以下）转发压一道就扫不动了
+                qr_size = 262
                 qx = WIDTH - MARGIN - qr_size - 30
                 qy = y + 26
                 draw.rounded_rectangle((qx - 10, qy - 10, qx + qr_size + 10, qy + qr_size + 10),
@@ -586,8 +637,8 @@ def render_card_image(
                 canvas.paste(qr_img, (qx, qy))
                 tag_font = _font(22, bold=True)
                 tw = _text_w(draw, "阵容码", tag_font)
-                draw.text((qx + (qr_size - tw) / 2, qy + qr_size + 14),
-                          "阵容码", font=tag_font, fill=(232, 236, 244))
+                draw.text((qx + (qr_size - tw) / 2, qy + qr_size + 12),
+                          "游戏内扫码导入", font=tag_font, fill=(232, 236, 244))
             y += block_h + 18
         else:
             # 魂土、觉醒这类刷本攻略本来就不发码，打法就是配速 + 御魂。

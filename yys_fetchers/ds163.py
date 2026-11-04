@@ -63,6 +63,9 @@ _TIME_RE = re.compile(r'<time class="time-location__time">\s*([^<]+?)\s*</time>'
 _TEXT_RE = re.compile(r'<div class="feed-card-ellipsis__text feed-text">(.*?)</div>', re.S)
 _TOPIC_RE = re.compile(r'<font class="highlight"[^>]*>(#[^<]*?#)</font>')
 _COVER_RE = re.compile(r'<img[^>]*src="(https://img\.166\.net/[^"?]+)[^"]*"')
+# 同一篇图文里常有好几张图，阵容二维码通常就在其中一张上。
+# 全部留下（封顶 6 张），交给上层去解码——只看封面会漏掉真正的攻略图。
+_IMAGES_RE = _COVER_RE
 _BR_RE = re.compile(r'<br[^>]*/?\s*>', re.I)
 
 # 「今天09:30」「昨天23:00」「前天12:00」
@@ -360,6 +363,16 @@ class Ds163Fetcher(BaseFetcher):
             datetime.fromtimestamp(created / 1000, CN_TZ) if created > 0 else None
         )
 
+        # 正文配图在 body.media 里。攻略「一图流」就是一张 1700×5900 的长图，
+        # 阵容二维码压在图上某个角落——只看文字是拿不到码的。
+        media = body.get("media") or []
+        images = [
+            str(entry.get("url") or "").strip()
+            for entry in media
+            if isinstance(entry, dict)
+        ]
+        images = [url for url in images if url.startswith("http")][:6]
+
         return GuideItem(
             source=self.source,
             item_id=fid,
@@ -368,13 +381,14 @@ class Ds163Fetcher(BaseFetcher):
             author=self._feed_author(feed),
             published=published,
             digest=digest,
-            cover="",
+            cover=images[0] if images else "",
             meta={
                 "type": "feed",
                 "uid": uid,
                 "topics": topics,
                 "chars": len(text),
                 "kind": feed.get("type"),
+                "images": images,
             },
         )
 
@@ -466,7 +480,7 @@ class Ds163Fetcher(BaseFetcher):
             if not title:
                 continue
 
-            cover_m = _COVER_RE.search(body)
+            images = _IMAGES_RE.findall(body)[:6]
             items.append(
                 GuideItem(
                     source=self.source,
@@ -476,12 +490,14 @@ class Ds163Fetcher(BaseFetcher):
                     author=author,
                     published=published,
                     digest=digest,
-                    cover=cover_m.group(1) if cover_m else "",
+                    cover=images[0] if images else "",
                     meta={
                         "type": "feed",
                         "uid": uid,
                         "topics": topics,
                         "chars": len(text),
+                        # 留给阵容二维码解码用：原文里的图比封面更可能带码
+                        "images": images,
                     },
                 )
             )
