@@ -37,7 +37,14 @@ from yys_core.models import (  # noqa: E402
     source_label,
     title_key,
 )
-from yys_core.render import pick_cover, render, render_forward, render_split  # noqa: E402
+from yys_core.render import (  # noqa: E402
+    pick_cover,
+    render,
+    render_code_list,
+    render_entry_block,
+    render_forward,
+    render_split,
+)
 from yys_core.scheduler import WarmupScheduler, parse_times  # noqa: E402
 from yys_core.summarize import summarize  # noqa: E402
 from yys_fetchers import (  # noqa: E402
@@ -368,11 +375,23 @@ class YysGuidePlugin(Star):
         # 一条道馆攻略能贴 9 个码，全列出来用户也不知道挑哪个
         max_codes = max(1, int(self._cfg("render.max_codes", 3)))
 
-        # 首选合并转发：会话里只占一行，点开才展开，既不刷屏也不乱序。
+        # 图片卡片：一条攻略一张图，式神横排、御魂挂在各自下面，
+        # 跟博主发的攻略图一个读法，扫一眼就知道谁配哪个御魂。
+        # 图里的码复制不了，所以后面单独补一条纯文字码。
+        carded = False
+        if bool(self._cfg("render.image_card", True)) and style.lower() == "card":
+            async for result in self._image_card_results(
+                event, display, entries, now, show_codes, max_codes
+            ):
+                yield result
+            carded = True
+
+        # 合并转发：会话里只占一行，点开才展开，既不刷屏也不乱序。
         # 只对 card 风格且协议端支持时启用，其余情况回落到分段/整卡。
         forwarded = False
         if (
-            bool(self._cfg("render.combine_forward", True))
+            not carded
+            and bool(self._cfg("render.combine_forward", True))
             and style.lower() == "card"
             and self._forward_supported(event)
         ):
@@ -384,7 +403,7 @@ class YysGuidePlugin(Star):
                 forwarded = True
 
         qr_order = per_message
-        if not forwarded:
+        if not carded and not forwarded:
             if split:
                 for chunk in render_split(
                     display, entries, per_message, now, notice, show_codes, max_codes
@@ -412,6 +431,99 @@ class YysGuidePlugin(Star):
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"[yys-guide] 封面发送失败：{exc!r}")
                     break
+
+    async def _image_card_results(
+        self,
+        event: AstrMessageEvent,
+        display: str,
+        entries: list[Any],
+        generated_at: datetime,
+        show_codes: bool,
+        max_codes: int,
+    ) -> AsyncGenerator[Any, None]:
+        """一条攻略发一张图片卡片，最后补一条纯文字码。
+
+        为什么不把五条拼成一张长图：QQ 里竖图会被缩到一屏高，
+        拼长了反而看不清御魂小字。
+        超过 max_card_images 的条目改发文字卡，免得一次刷七八张图。
+        """
+        try:
+            from yys_core.card_image import render_card_image
+        except Exception as exc:  # noqa: BLE001
+            logger.info(f"[yys-guide] 图片卡片模块不可用，改发文字卡：{exc!r}")
+            for chunk in render_split(
+                display, entries, 1, generated_at, "", show_codes, max_codes
+            ):
+                yield event.plain_result(chunk)
+            return
+
+        total = len(entries)
+        budget = max(1, int(self._cfg("render.max_card_images", 3)))
+        draw_qr = (
+            show_codes
+            and bool(self._cfg("render.show_qr", True))
+            and int(self._cfg("render.max_qr", 2)) > 0
+        )
+        qr_dir = os.path.join(_data_dir(), "qr")
+        avatar_dir = os.path.join(_data_dir(), "avatars")
+        out_dir = os.path.join(_data_dir(), "cards")
+        stamp = generated_at.astimezone(CN_TZ).strftime("%m-%d %H:%M")
+
+        drawn = 0
+        rest: list[Any] = []
+        for index, entry in enumerate(entries, 1):
+            if drawn >= budget:
+                rest.append(entry)
+                continue
+
+            codes = list(getattr(entry, "codes", []) or [])
+            # 图里只放第一个码：一张图配一张码才对得上，其余的在文字码那条里
+            code = ""
+            if codes and show_codes:
+                code = str(getattr(codes[0], "code", "") or "")
+            qr_path = None
+            if code and draw_qr:
+                qr_path = await asyncio.to_thread(teamcode.qr_image, code, qr_dir)
+
+            path = await asyncio.to_thread(
+                render_card_image, entry, index, total, qr_path, code,
+                avatar_dir, out_dir, stamp,
+            )
+            if not path:
+                # 缺 Pillow / 没有中文字体之类：整批退回文字卡，
+                # 不能让用户收到「前三张有图、后两张没有」的半套结果。
+                logger.info("[yys-guide] 图片卡片渲染失败，本次改发文字卡")
+                for chunk in render_split(
+                    display, entries, 1, generated_at, "", show_codes, max_codes
+                ):
+                    yield event.plain_result(chunk)
+                return
+
+            try:
+                yield event.image_result(path)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[yys-guide] 图片卡片发送失败，改发文字：{exc!r}")
+                yield event.plain_result(
+                    render_entry_block(entry, index, total, show_codes, max_codes)
+                )
+            drawn += 1
+
+        if rest:
+            # 编号接着图往下排：图是 1/5、2/5，文字就从 3/5 起，
+            # 从头再来一遍 1/3 会让人以为收到了两份不同的结果。
+            start = total - len(rest) + 1
+            for offset, entry in enumerate(rest):
+                yield event.plain_result(
+                    render_entry_block(
+                        entry, start + offset, total, show_codes, max_codes
+                    )
+                )
+
+        # 图好看但码复制不了，这条才是真能用的那一条
+        if show_codes:
+            codes_text = render_code_list(entries, max_codes)
+            if codes_text:
+                yield event.plain_result(codes_text)
 
     @staticmethod
     def _forward_supported(event: AstrMessageEvent) -> bool:

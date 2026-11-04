@@ -221,6 +221,10 @@ DEFAULT_CONFIG = {
     },
     "render": {
         "style": "card",
+        # 图片卡片默认是开的，但这里要验证合并转发的节点切分，
+        # 所以先在默认配置里关掉，场景 E 再单独打开它。
+        "image_card": False,
+        "max_card_images": 3,
         "show_cover": False,
         "combine_forward": True,
         "forward_name": "阴阳师攻略",
@@ -345,6 +349,28 @@ async def main() -> None:
     outputs = await run_case("不该触发", NoLLMContext(), "今天中午吃什么")
     assert outputs == [], "不该触发却触发了"
     print("[ok] 误触发防护通过")
+
+    print("\n\n### 场景 F：图片卡片（默认开启）")
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["render"]["image_card"] = True
+    cfg["render"]["max_card_images"] = 2
+    outputs = await run_case(
+        "图片卡片", NoLLMContext(), "阴阳师御魂怎么配", config=cfg
+    )
+    images = [o for o in outputs if o.startswith("IMAGE:")]
+    texts = [o for o in outputs if o.startswith("TEXT:")]
+    forwards = [o for o in outputs if o.startswith("FORWARD:")]
+    assert images, "开了图片卡片却没发图"
+    assert len(images) <= 2, f"超出 max_card_images 上限，实际 {len(images)} 张"
+    assert not forwards, "图片卡片模式下不该再发合并转发"
+    for image in images:
+        path = image.split(":", 1)[1]
+        assert os.path.exists(path), f"图片文件不存在：{path}"
+        assert os.path.getsize(path) > 20000, "图片太小，八成是渲染失败的空图"
+    # 图里的码复制不了，必须额外有一条纯文字码（有码的情况下）
+    if any("|TA|" in t for t in texts):
+        print("  [ok] 文字码单独发了一条")
+    print("\n[ok] 图片卡片通过")
 
     print("\n\n" + "=" * 60)
     print("端到端测试全部通过")

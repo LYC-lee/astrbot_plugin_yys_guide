@@ -344,6 +344,23 @@
         ],
         "hint": "QQ/微信建议用 card，Discord/Telegram/飞书可以用 markdown。"
       },
+      "image_card": {
+        "description": "渲染成图片卡片",
+        "type": "bool",
+        "default": true,
+        "hint": "把每条攻略画成一张图：式神横排、御魂挂在各自下面、配速和结论高亮，最后附阵容码二维码。比纯文本一眼看得清谁配哪个御魂。图里的码复制不了，所以会自动再发一条纯文字码。关闭后回到文字卡片（分段/合并转发）。"
+      },
+      "max_card_images": {
+        "description": "最多发几张图片卡片",
+        "type": "int",
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 5,
+          "step": 1
+        },
+        "hint": "一次查五条攻略就发五张图会刷屏。超出的条目自动改发文字卡片，信息不会少。"
+      },
       "combine_forward": {
         "description": "合并转发成聊天记录",
         "type": "bool",

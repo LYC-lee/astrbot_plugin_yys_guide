@@ -229,6 +229,42 @@ def render_split(
     return chunks
 
 
+def render_code_list(
+    entries: list[CardEntry],
+    max_codes: int = 3,
+) -> str:
+    """图片卡模式下单独发的一条「纯文字码」。
+
+    图里的码再好看也复制不了——手机上长按图片只会弹出「保存」。
+    所以图归图，码另起一条消息：一行一个、顶格，长按就是干净的 36 个字符。
+    没有一条带码时返回空串，调用方据此不发这条。
+    """
+    picked: list[tuple[int, CardEntry, list[Any]]] = []
+    for index, entry in enumerate(entries, 1):
+        codes = list(getattr(entry, "codes", []) or [])[: max(1, max_codes)]
+        if codes:
+            picked.append((index, entry, codes))
+
+    if not picked:
+        return ""
+
+    lines = ["▎阵容码（长按复制，粘贴到 式神录→阵容助手）"]
+    last_label = ""
+    for index, entry, codes in picked:
+        title = str(getattr(entry, "title", "") or "")
+        lines.append(f"{INDENT}{index}. {title[:24]}")
+        for item in codes:
+            label = getattr(item, "label", "")
+            if label and label != last_label:
+                lines.append(f"{INDENT}· {label}")
+                last_label = label
+            lines.append(str(getattr(item, "code", item)))
+    text = "\n".join(lines)
+    if len(text) > MAX_LENGTH:
+        text = text[: MAX_LENGTH - len(TRUNCATED_TAIL)].rstrip() + TRUNCATED_TAIL
+    return text
+
+
 @dataclass
 class ForwardNode:
     """合并转发里的一个节点，点开合集后看到的就是它。

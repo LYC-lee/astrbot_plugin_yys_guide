@@ -278,6 +278,40 @@ NGA 和抖音不支持按作者抓，所以没有对应模板。
 `render.style` 可以换成 `markdown`（Discord / Telegram / 飞书）或 `plain`。
 缩进用的是全角空格，因为 OneBot 适配器会对纯文本做 strip，半角缩进在某些渠道会塌掉。
 
+### 图片卡片
+
+`render.image_card` 默认开启：每条攻略画成一张竖图（1080 宽），
+式神横着排开、御魂挂在各自下面，跟你平时看的攻略图一个读法。
+
+![图片卡片示例](docs/card-example.png)
+
+版式从上到下：
+
+| 区块 | 内容 | 取值来源 |
+| --- | --- | --- |
+| 标题条 | 序号 + 这条在讲什么 | `title` |
+| 式神列 | 头像 / 名字 / 黑底御魂块（上属性下御魂名） | `team` + `souls` |
+| 配速 | 单独拎出来一行，红字标出来 | `howto` 里含「配速 / 速度」的那句 |
+| 结论 | 黄底黑框高亮，打法第一句 | `howto` |
+| 备注 | ①②③ 编号列表 | `note` |
+| 导入块 | 存图提示 + 二维码 + 文字码 | 提取到的 `\|TA\|` 码 |
+
+几个刻意的取舍：
+
+- **御魂按式神名对齐**：「须佐之男：狂骨 4」会挂到须佐那一列；只写「狂骨 4 / 破势 4」
+  的按出现顺序补位，补不上的宁可在黑块里写「原文没提」，也不张冠李戴。
+- **图片里的码不能长按复制**，所以发完图会再补一条纯文字码，一行一个、顶格，
+  那条才是能直接粘进游戏的。
+- **最多发 `render.max_card_images`（默认 3）张**，多出来的条目自动改发文字卡片，
+  编号接着往下排（3/5、4/5），不会让你以为收到了两份结果。
+- 缺 Pillow、没有中文字体、渲染异常时**整批退回文字卡片**，
+  不会出现「前三条有图后两条没有」的半套结果。
+
+**式神头像**：插件不内置图片（涉及版权）。想换成真头像，把图片按
+`data/plugin_data/astrbot_plugin_yys_guide/avatars/须佐之男.png` 放进头像目录即可，
+文件名就是式神名（`SP缘结神.png`、`UR大天狗.png` 这样原样写）。
+没有素材的式神会画一个配色圆 + 名字首字，不影响对位和阅读。
+
 ### 阵容码与二维码
 
 博主贴的「|TA|」开头那串就是游戏里的阵容码，插件会从标题、摘要、正文里
@@ -444,7 +478,7 @@ astrbot_plugin_yys_guide/
 ├── main.py                 # 触发、流程编排、指令
 ├── _conf_schema.json       # WebUI 可视化配置
 ├── metadata.yaml
-├── requirements.txt        # httpx + qrcode[pil]（后者可选，装不上只发文字码）
+├── requirements.txt        # httpx + qrcode[pil] + Pillow（后两者可选，缺了自动降级）
 ├── yys_core/
 │   ├── aliases.py          # 别名匹配（实体词 vs 意图词）
 │   ├── bili_wbi.py         # B站 WBI 签名
@@ -453,6 +487,7 @@ astrbot_plugin_yys_guide/
 │   ├── http.py             # 带重试的 HTTP 客户端
 │   ├── models.py           # GuideItem 数据模型 + 标题归一化
 │   ├── render.py           # 三种卡片样式 + 合并转发节点 + 分段发送
+│   ├── card_image.py       # 图片卡片：式神列 / 御魂块 / 二维码排版
 │   ├── teamcode.py         # 阵容码提取 / 二维码生成
 │   ├── fieldsplit.py       # 原文切成式神 / 御魂 / 其余
 │   ├── scheduler.py        # 定时预热
@@ -471,6 +506,7 @@ astrbot_plugin_yys_guide/
     ├── test_teamcode.py        # 46 项阵容码与分段渲染
     ├── test_forward.py         # 26 项合并转发节点切分
     ├── test_fieldsplit.py      # 32 项式神御魂切分
+    ├── test_card_image.py      # 28 项图片卡片排版与拆分
     ├── test_end_to_end.py      # 模拟一条群消息走完全流程
     ├── verify_default_config.py# 用默认配置跑一遍
     ├── check_authors.py        # 校验名单里的 uid/mid
