@@ -37,7 +37,7 @@ from yys_core.models import (  # noqa: E402
     source_label,
     title_key,
 )
-from yys_core.render import pick_cover, render, render_split  # noqa: E402
+from yys_core.render import pick_cover, render, render_forward, render_split  # noqa: E402
 from yys_core.scheduler import WarmupScheduler, parse_times  # noqa: E402
 from yys_core.summarize import summarize  # noqa: E402
 from yys_fetchers import (  # noqa: E402
@@ -67,7 +67,7 @@ def _data_dir() -> str:
     PLUGIN_NAME,
     "yys-guide",
     "阴阳师攻略助手：关键词触发，自动抓取博主攻略（网易大神/B站/NGA/微博/抖音）并整理成结构化卡片",
-    "1.4.0",
+    "1.5.0",
     "https://github.com/LYC-lee/astrbot_plugin_yys_guide",
 )
 class YysGuidePlugin(Star):
@@ -354,6 +354,10 @@ class YysGuidePlugin(Star):
 
             entries = rule_summarize(items)
 
+        # 摘要是按 entry 顺序一一对应的，合并必须放在这之后：
+        # 前面拿不到阵容码，跨平台同篇攻略就分不出来。
+        entries = self._dedupe_cross_post(entries)
+
         now = datetime.now(CN_TZ)
         style = str(self._cfg("render.style", "card") or "card")
         show_codes = bool(self._cfg("render.show_team_code", True))
@@ -364,22 +368,41 @@ class YysGuidePlugin(Star):
         # 一条道馆攻略能贴 9 个码，全列出来用户也不知道挑哪个
         max_codes = max(1, int(self._cfg("render.max_codes", 3)))
 
-        if split:
-            for chunk in render_split(
-                display, entries, per_message, now, notice, show_codes, max_codes
-            ):
-                yield event.plain_result(chunk)
-            qr_order = per_message
-        else:
-            yield event.plain_result(
-                render(display, entries, style, now, notice, show_codes, max_codes)
+        # 首选合并转发：会话里只占一行，点开才展开，既不刷屏也不乱序。
+        # 只对 card 风格且协议端支持时启用，其余情况回落到分段/整卡。
+        forwarded = False
+        if (
+            bool(self._cfg("render.combine_forward", True))
+            and style.lower() == "card"
+            and self._forward_supported(event)
+        ):
+            result = await self._forward_result(
+                event, display, entries, now, notice, show_codes, max_codes
             )
-            qr_order = 0
-
-        # 二维码紧跟在它的文字码后面：翻到哪条就扫哪条，不用回头找。
-        if show_codes and bool(self._cfg("render.show_qr", True)):
-            async for result in self._qr_results(event, entries, qr_order, max_codes):
+            if result is not None:
                 yield result
+                forwarded = True
+
+        qr_order = per_message
+        if not forwarded:
+            if split:
+                for chunk in render_split(
+                    display, entries, per_message, now, notice, show_codes, max_codes
+                ):
+                    yield event.plain_result(chunk)
+            else:
+                yield event.plain_result(
+                    render(display, entries, style, now, notice, show_codes, max_codes)
+                )
+                qr_order = 0
+
+            # 二维码紧跟在它的文字码后面：翻到哪条就扫哪条，不用回头找。
+            # 走合并转发时图已经塞进节点里了，这里不重复发。
+            if show_codes and bool(self._cfg("render.show_qr", True)):
+                async for result in self._qr_results(
+                    event, entries, qr_order, max_codes
+                ):
+                    yield result
 
         if bool(self._cfg("render.show_cover", False)):
             covers = pick_cover(entries, [item.cover for item in items])
@@ -389,6 +412,107 @@ class YysGuidePlugin(Star):
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(f"[yys-guide] 封面发送失败：{exc!r}")
                     break
+
+    @staticmethod
+    def _forward_supported(event: AstrMessageEvent) -> bool:
+        """当前协议端能不能发合并转发。
+
+        合并转发（聊天记录合集）是 OneBot v11 的扩展接口，
+        Telegram / 飞书 / 微信个人号那些平台没有对应能力，
+        硬发会直接报错或者变成一串散消息，所以先看平台名。
+        """
+        name = ""
+        getter = getattr(event, "get_platform_name", None)
+        if callable(getter):
+            try:
+                name = str(getter() or "")
+            except Exception:  # noqa: BLE001
+                name = ""
+        if not name:
+            name = str(getattr(getattr(event, "platform_meta", None), "name", "") or "")
+        name = name.lower()
+        return "cqhttp" in name or "onebot" in name
+
+    @staticmethod
+    def _self_id(event: AstrMessageEvent) -> str:
+        """机器人自己的 QQ 号，合并转发节点里要带一个 uin。"""
+        for attr in ("get_self_id", "get_bot_id"):
+            getter = getattr(event, attr, None)
+            if not callable(getter):
+                continue
+            try:
+                value = str(getter() or "")
+            except Exception:  # noqa: BLE001
+                continue
+            if value.isdigit():
+                return value
+        return "0"
+
+    async def _forward_result(
+        self,
+        event: AstrMessageEvent,
+        display: str,
+        entries: list[Any],
+        generated_at: datetime,
+        notice: str,
+        show_codes: bool,
+        max_codes: int,
+    ) -> Any:
+        """组装成一条「合并转发聊天记录」。
+
+        返回 None 表示这条路走不通（AstrBot 版本太老、组件构造失败），
+        调用方据此回落到分段发送——不能因为一个装饰性功能让用户看空回复。
+        """
+        try:
+            from astrbot.api.message_components import Image, Node, Nodes, Plain
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[yys-guide] 当前 AstrBot 没有 Node/Nodes，改用分段发送：{exc!r}")
+            return None
+
+        nodes = render_forward(
+            display, entries, generated_at, notice, show_codes, max_codes
+        )
+        name = str(self._cfg("render.forward_name", "阴阳师攻略") or "阴阳师攻略")
+        uin = self._self_id(event)
+
+        budget = 0
+        if (
+            show_codes
+            and bool(self._cfg("render.forward_qr", True))
+            and bool(self._cfg("render.show_qr", True))
+        ):
+            budget = max(0, int(self._cfg("render.max_qr", 2)))
+        directory = os.path.join(_data_dir(), "qr")
+
+        chain: list[Any] = []
+        for node in nodes:
+            parts: list[Any] = [Plain(node.text)]
+            # 一条只配一张图，对应它第一个码。合集里塞三张图，
+            # 用户点开看到三团黑白方块，也对不上是哪个阵容。
+            for item in node.codes[:1]:
+                if budget <= 0:
+                    break
+                code = getattr(item, "code", str(item))
+                path = await asyncio.to_thread(teamcode.qr_image, code, directory)
+                if not path:
+                    # 缺 qrcode 依赖：文字码已经在正文里了，不影响使用
+                    logger.info("[yys-guide] 二维码生成不可用，合集里只放文字码")
+                    budget = 0
+                    break
+                try:
+                    parts.append(Image.fromFileSystem(path))
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"[yys-guide] 合集内嵌图片失败：{exc!r}")
+                    budget = 0
+                    break
+                budget -= 1
+            chain.append(Node(content=parts, name=name, uin=uin))
+
+        try:
+            return event.chain_result([Nodes(chain)])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[yys-guide] 合并转发组装失败，改成分段发送：{exc!r}")
+            return None
 
     async def _qr_results(
         self,
@@ -624,6 +748,56 @@ class YysGuidePlugin(Star):
                     break
             if not duplicate:
                 kept.append(item)
+        return kept
+
+    @staticmethod
+    def _dedupe_cross_post(entries: list[Any]) -> list[Any]:
+        """同一套阵容在两个平台各发一遍的，只留信息更全的那条。
+
+        典型场景：UP 主先发 B 站视频，再把同一篇图文搬到网易大神。
+        标题一个叫「最新道馆进攻阵容」，一个叫「道馆进攻 ur大天狗版本全套阵容」，
+        跨平台又没有共同作者名，标题去重完全拦不住；但两边的阵容码一模一样。
+
+        阵容码就是这套阵容的指纹，所以拿它当依据。只在「不同平台」之间合并，
+        同一平台同作者的重复交给 _drop_near_duplicates，避免误伤同一套阵容的
+        两篇不同攻略（比如先发思路再发成品）。
+        """
+        kept: list[Any] = []
+        fingerprints: list[set[str]] = []
+
+        def richness(entry: Any) -> int:
+            return sum(
+                len(str(getattr(entry, field, "") or ""))
+                for field in ("team", "souls", "howto", "note")
+            )
+
+        for entry in entries:
+            codes = {
+                getattr(code, "code", str(code))
+                for code in (getattr(entry, "codes", []) or [])
+            }
+            hit = None
+            if codes:
+                for index, print_set in enumerate(fingerprints):
+                    if not print_set or not (print_set & codes):
+                        continue
+                    if kept[index].source != entry.source:
+                        hit = index
+                        break
+
+            if hit is None:
+                kept.append(entry)
+                fingerprints.append(codes)
+                continue
+
+            # 视频和图文都留一份没意义，留字段更全的：图文通常文字更多，
+            # 视频通常画质参考更直观，谁信息量大留谁。
+            if richness(entry) > richness(kept[hit]):
+                kept[hit] = entry
+                fingerprints[hit] |= codes
+            logger.debug(
+                f"[yys-guide] 跨平台重复（阵容码相同），合并：{entry.title[:20]!r}"
+            )
         return kept
 
     @staticmethod

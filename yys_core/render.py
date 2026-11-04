@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from yys_core.models import CN_TZ, fmt_human_time, source_label
 from yys_core.summarize import CardEntry
@@ -19,6 +21,7 @@ from yys_core.summarize import CardEntry
 INDENT = "\u3000"
 DIVIDER = "─" * 14
 MAX_LENGTH = 3600
+TRUNCATED_TAIL = "\n…内容过长已截断，完整内容看上方链接"
 
 _FIELD_LABELS = (
     ("team", "阵容"),
@@ -113,7 +116,15 @@ def render_entry_block(
         blocks.append(CODE_HINT)
         blocks.extend(_code_lines(entry.codes, max_codes))
 
-    return "\n".join(blocks)
+    text = "\n".join(blocks)
+    # 单条也可能超长（有的博主把整篇攻略塞进简介）。
+    # 合并转发是一个节点一条消息，节点本身也有长度上限，
+    # 与其被协议端从中间砍掉，不如自己截断并留个指路的话。
+    # 尾巴的长度要算进去，否则截完还是超。
+    if len(text) > MAX_LENGTH:
+        tail = TRUNCATED_TAIL
+        text = text[: MAX_LENGTH - len(tail)].rstrip() + tail
+    return text
 
 
 def render_card(
@@ -149,7 +160,7 @@ def render_card(
 
     text = "\n".join(blocks)
     if len(text) > MAX_LENGTH:
-        text = text[:MAX_LENGTH].rstrip() + "\n…内容过长已截断，完整内容看上方链接"
+        text = text[: MAX_LENGTH - len(TRUNCATED_TAIL)].rstrip() + TRUNCATED_TAIL
     return text
 
 
@@ -191,6 +202,59 @@ def render_split(
         chunks.append(footer)
     return chunks
 
+
+@dataclass
+class ForwardNode:
+    """合并转发里的一个节点，点开合集后看到的就是它。
+
+    codes 留着给上层决定要不要在这个节点里再补一张二维码图片；
+    渲染层自己不管图片，保持纯文本、可离线测试。
+    """
+
+    text: str
+    codes: list[Any] = field(default_factory=list)
+
+
+def render_forward(
+    topic: str,
+    entries: list[CardEntry],
+    generated_at: datetime | None = None,
+    notice: str = "",
+    show_codes: bool = True,
+    max_codes: int = 3,
+) -> list[ForwardNode]:
+    """把结果组装成「合并转发聊天记录」的节点列表。
+
+    比起把五条攻略拆成五条消息，合并转发在会话里只占一行，
+    不刷屏、不掉顺序，想看的人点开才展开。节点顺序就是阅读顺序：
+    概况 -> 第 1 条 ... 第 n 条 -> 脚注。
+    """
+    generated_at = generated_at or datetime.now(CN_TZ)
+    if not entries:
+        return [ForwardNode(text=render_card(topic, [], generated_at, notice))]
+
+    head = [render_header(topic, len(entries), generated_at, notice)]
+    head.append(f"{INDENT}点开往下翻，每条攻略一个节点，阵容码就在它自己那条里。")
+    nodes: list[ForwardNode] = [ForwardNode(text="\n".join(head))]
+
+    total = len(entries)
+    for index, entry in enumerate(entries, 1):
+        nodes.append(
+            ForwardNode(
+                text=render_entry_block(
+                    entry, index, total, show_codes=show_codes, max_codes=max_codes
+                ),
+                # 只把正文里真的展示出来的码带上去，附图才和文字对得上
+                codes=list(entry.codes or [])[: max(1, max_codes)]
+                if show_codes
+                else [],
+            )
+        )
+
+    footer = _footer(entries)
+    if footer:
+        nodes.append(ForwardNode(text=footer))
+    return nodes
 
 
 def render_markdown(
@@ -234,7 +298,7 @@ def render_markdown(
 
     text = "\n".join(lines).strip()
     if len(text) > MAX_LENGTH:
-        text = text[:MAX_LENGTH].rstrip() + "\n…已截断"
+        text = text[: MAX_LENGTH - len("\n…已截断")].rstrip() + "\n…已截断"
     return text
 
 

@@ -344,11 +344,29 @@
         ],
         "hint": "QQ/微信建议用 card，Discord/Telegram/飞书可以用 markdown。"
       },
+      "combine_forward": {
+        "description": "合并转发成聊天记录",
+        "type": "bool",
+        "default": true,
+        "hint": "把所有攻略打包成一条「合并转发聊天记录」，会话里只占一行，点开才展开，不刷屏也不掉顺序。仅 OneBot（QQ 协议端）支持，其它平台会自动改成分段发送。"
+      },
+      "forward_name": {
+        "description": "合集里显示的昵称",
+        "type": "string",
+        "default": "阴阳师攻略",
+        "hint": "合并转发每个节点的发送者昵称，显示成「阴阳师攻略的聊天记录」。"
+      },
+      "forward_qr": {
+        "description": "二维码放进合集里",
+        "type": "bool",
+        "default": true,
+        "hint": "二维码直接放进对应的攻略节点，点开合集就能看到，不会在群里额外发图。老版本 go-cqhttp 等协议端不支持节点内嵌图片时，关掉这一项即可。"
+      },
       "split_messages": {
         "description": "分段发送",
         "type": "bool",
         "default": true,
-        "hint": "把一条长卡片拆成「概况 + 每 N 条一条消息」。手机上不用滑好几屏，中途被刷屏也不至于找不到看哪儿。只对 card 风格生效。"
+        "hint": "合并转发不可用时（非 QQ 平台，或上面关掉了）把长卡片拆成「概况 + 每 N 条一条消息」。只对 card 风格生效。"
       },
       "items_per_message": {
         "description": "每条消息装几条攻略",

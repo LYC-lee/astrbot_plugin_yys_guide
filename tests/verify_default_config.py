@@ -69,6 +69,13 @@ async def main() -> None:
 
         event = FakeEvent(text)
         async for chunk in plugin._process(event, match):
+            if isinstance(chunk, str) and chunk.startswith("FORWARD:"):
+                nodes = event.forward_nodes(chunk)
+                print(f"\n【合并转发 · {len(nodes)} 个节点】")
+                for index, node in enumerate(nodes, 1):
+                    print(f"\n--- 节点 {index} ---")
+                    print(node.split("]", 1)[-1] if "]" in node else node)
+                continue
             body = chunk[5:] if isinstance(chunk, str) and chunk.startswith("TEXT:") else chunk
             print(body)
 
