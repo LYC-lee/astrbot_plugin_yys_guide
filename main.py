@@ -448,7 +448,7 @@ class YysGuidePlugin(Star):
         超过 max_card_images 的条目改发文字卡，免得一次刷七八张图。
         """
         try:
-            from yys_core.card_image import render_card_image
+            from yys_core.card_image import prune_cards, render_card_image
         except Exception as exc:  # noqa: BLE001
             logger.info(f"[yys-guide] 图片卡片模块不可用，改发文字卡：{exc!r}")
             for chunk in render_split(
@@ -468,6 +468,8 @@ class YysGuidePlugin(Star):
         avatar_dir = os.path.join(_data_dir(), "avatars")
         out_dir = os.path.join(_data_dir(), "cards")
         stamp = generated_at.astimezone(CN_TZ).strftime("%m-%d %H:%M")
+        # 图是按标题哈希存盘的，长期跑会攒下来，发之前顺手清一次
+        await asyncio.to_thread(prune_cards, out_dir)
 
         drawn = 0
         rest: list[Any] = []

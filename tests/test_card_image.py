@@ -104,6 +104,12 @@ def test_slots_limit() -> None:
     check("最多五列", len(slots) == 5, str(len(slots)))
 
 
+def test_slots_ignore_placeholder() -> None:
+    """「原文没提」是渲染层自己补的占位词，不能画成一列式神。"""
+    slots = card_image.parse_slots("原文没提", "原文没提")
+    check("占位词不占用式神位", slots == [], str([(s.name, s.souls) for s in slots]))
+
+
 def test_speed_line() -> None:
     """配速要单独拎出来画，混在打法里会被忽略。"""
     entry = make_entry()

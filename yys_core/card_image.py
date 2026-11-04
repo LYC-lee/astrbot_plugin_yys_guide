@@ -149,6 +149,10 @@ _NAME_SEP = re.compile(r"^\s*([^：:]{1,12})[：:]\s*(.+)$")
 # 属于同一条御魂，拆开就成了「狂骨」/「4 + 鬼灵歌伎 2」，读着别扭。
 _ATTR_SEP = re.compile(r"(?<![+＋/、])\s+(?=[\u4e00-\u9fff])")
 
+# 「原文没提」这类占位词是卡片渲染层自己补的，跑回解析时不能当成式神名，
+# 否则图上会多出一列叫「原文没提」的式神。
+_PLACEHOLDERS = {"原文没提", "未提", "暂无", "无", "-", "—", "空"}
+
 
 def _clean(text: str) -> str:
     return re.sub(r"[\s\u3000]+", " ", str(text or "")).strip(" /／、,，;；|")
@@ -174,11 +178,17 @@ def parse_slots(team: str, souls: str, limit: int = 5) -> list[Slot]:
     有的博主写成「狂骨 4 + 鬼灵歌伎 2 / 招财猫 4」只给顺序，
     那就按出现顺序依次填。
     """
-    names = [n for n in (_clean(p) for p in _TEAM_SPLIT.split(_clean(team))) if n]
-    # 拆出来还是一长串（整段话塞在 team 里）时截前几个词，别把整句当式神名
-    names = [n[:12] for n in names][:limit]
+    names = [
+        n[:12]
+        for n in (_clean(p) for p in _TEAM_SPLIT.split(_clean(team)))
+        if n and n not in _PLACEHOLDERS
+    ][:limit]
 
-    chunks = [c for c in (_clean(p) for p in _SOUL_SPLIT.split(str(souls or ""))) if c]
+    chunks = [
+        c
+        for c in (_clean(p) for p in _SOUL_SPLIT.split(str(souls or "")))
+        if c and c not in _PLACEHOLDERS
+    ]
     named: dict[str, list[str]] = {}
     loose: list[list[str]] = []
     for chunk in chunks:
@@ -312,6 +322,30 @@ def _avatar(name: str, size: int, directory: str):
 
 
 # ---------------------------------------------------------------- 画图
+
+
+def prune_cards(directory: str, keep: int = 120) -> None:
+    """清掉旧图，只留最近 keep 张。
+
+    文件名是按标题哈希的，同一篇攻略反复查只会覆盖同一个文件，
+    但天天查不同攻略总会攒下来。一张 200KB，不清能长到几百兆。
+    """
+    try:
+        names = [n for n in os.listdir(directory) if n.endswith(".png")]
+    except OSError:
+        return
+    if len(names) <= keep:
+        return
+    paths = [os.path.join(directory, n) for n in names]
+    try:
+        paths.sort(key=os.path.getmtime)
+    except OSError:
+        return
+    for path in paths[: len(paths) - keep]:
+        try:
+            os.remove(path)
+        except OSError:
+            continue
 
 
 def render_card_image(
