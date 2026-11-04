@@ -437,14 +437,24 @@ def render_card_image(
             start_x = (WIDTH - col_w * count) // 2
             avatar = min(150, col_w - 22)
             name_font = _font(27, bold=True)
-            soul_font = _font(20, bold=True)
-            soul_line_h = 28
+            # 四五列时块里只有 180 来像素，「狂骨 4 + 鬼灵歌伎 2」这种长名字
+            # 会被截掉，小一号再按块宽折行才塞得下
+            soul_font = _font(19 if count >= 4 else 21, bold=True)
+            soul_line_h = 27
+            block_w = col_w - 20
 
-            # 一列撑死三行御魂（属性 / 御魂名 / 补充），再多就把列顶开了
+            # 每列先把御魂折行，再按最高的那一列定块高，保证黑块底边齐平
+            cell_rows: list[list[tuple[str, bool]]] = []
             for slot in slots:
-                slot.souls = slot.souls[:3]
-            soul_rows = max([len(s.souls) or 1 for s in slots] + [1])
-            block_h = 14 + soul_rows * soul_line_h + 6
+                lines: list[tuple[str, bool]] = []
+                # 一列最多三条御魂，再多就把整行顶开了
+                for item_index, item in enumerate(slot.souls[:3]):
+                    for line in _wrap(draw, item, soul_font, block_w - 14):
+                        lines.append((line, item_index == 0))
+                cell_rows.append(lines[:5])
+
+            soul_rows = max([len(lines) or 1 for lines in cell_rows] + [1])
+            block_h = 12 + soul_rows * soul_line_h + 8
             row_h = avatar + 40 + 34 + block_h
 
             for i, slot in enumerate(slots):
@@ -468,17 +478,16 @@ def render_card_image(
                 bx0, bx1 = cx - col_w // 2 + 10, cx + col_w // 2 - 10
                 draw.rounded_rectangle((bx0, by, bx1, by + block_h),
                                        radius=8, fill=SOUL_BG)
-                texts = slot.souls or ["原文没提"]
-                for r, text in enumerate(texts):
-                    line = _ellipsis(draw, text, soul_font, bx1 - bx0 - 14)
-                    tw = _text_w(draw, line, soul_font)
-                    if not slot.souls:
+                texts = cell_rows[i] if cell_rows[i] else [("原文没提", True)]
+                for r, (text, is_first) in enumerate(texts):
+                    tw = _text_w(draw, text, soul_font)
+                    if not cell_rows[i]:
                         color = (150, 156, 170)
                     else:
-                        # 第一行是主属性，往下是御魂名，上白下金才好分
-                        color = (255, 255, 255) if r == 0 else GOLD
+                        # 第一条是主属性（白），往后是御魂名（金）
+                        color = (255, 255, 255) if is_first else GOLD
                     draw.text((cx - tw / 2, by + 12 + r * soul_line_h),
-                              line, font=soul_font, fill=color)
+                              text, font=soul_font, fill=color)
             y += row_h + 12
 
         # ---- 配速 ----
