@@ -16,7 +16,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from yys_core import teamcode
+from yys_core import fieldsplit, teamcode
 from yys_core.models import GuideItem, fmt_human_time, one_line, source_label
 
 
@@ -64,8 +64,16 @@ SYSTEM_PROMPT = """你是《阴阳师》资深攻略编辑，擅长把一手攻�
    - howto：打法要点，1-2 句，写清楚起手、节奏、关键操作
    - note：注意事项或前提条件（练度、皮肤、版本限制），没有就空字符串
    - 原文里「|TA|」开头的那串阵容码不要抄进任何字段，程序会单独提取。
-3. 输出必须是纯 JSON 数组，不要 ```json 包裹，不要任何解释文字。
-4. 数组长度与输入条目数一致，顺序也保持一致。
+3. 刷本类（魂土 / 觉醒 / 周末本）的原文，常把配速、御魂缩写、式神名写在同一行，
+   例如「大于158狂歌雪」「狂荒紧那罗」「火灵生生生食灵」：
+   - 能认出式神名的（紧那罗、食灵）放进 team
+   - 只有御魂和配速的放进 souls
+   - **缩写原样保留，不要自己展开**。把「狂歌雪」猜成「狂骨+歌伎+雪御前」，
+     猜错一个用户就配错一整套，比留空更糟。
+4. team 和 souls 里一条一套，用「 / 」分隔，不要挤成一大段。
+5. 原文是纯思路、没给具体配置时，team 和 souls 留空，只在 howto 里写思路。
+6. 输出必须是纯 JSON 数组，不要 ```json 包裹，不要任何解释文字。
+7. 数组长度与输入条目数一致，顺序也保持一致。
 """
 
 
@@ -190,12 +198,20 @@ def rule_summarize(items: list[GuideItem]) -> list[CardEntry]:
     """不调模型时的兜底：只截原文，不编造。
 
     原文里的换行必须压掉，否则视频简介那种多行文本会把卡片排版撑坏。
+    先按行切成「式神 / 御魂 / 其余」再渲染，魂土那种
+    「大于158狂歌雪 / 狂荒紧那罗 / 火灵生生生食灵」才不会整段糊在「打法」里。
     """
     entries: list[CardEntry] = []
     for item in items:
-        # 先抹掉正文里的码再截断：160 字截在码中间会剩半串，
-        # 用户复制了导入失败，还以为是插件把码弄错了。
-        digest = one_line(teamcode.strip_codes(item.digest or item.content), 160)
+        # 先抹掉正文里的码再切：截断时剩下半串码，用户复制了导入失败，
+        # 还以为是插件把码弄错了。
+        raw = teamcode.strip_codes(item.digest or item.content)
+        team, souls, rest = fieldsplit.split_fields(raw, item.title)
+        # 什么都切不出来（纯思路类原文）就整段进 howto，别留一堆空栏
+        howto = one_line(rest, 160) if (team or souls) else one_line(raw, 160)
+        # 有些视频简介就是标题的复读，再打一遍「打法：」纯属浪费屏幕
+        if howto and fieldsplit.looks_like_title(howto, item.title):
+            howto = ""
         entries.append(
             CardEntry(
                 title=one_line(item.title, 60),
@@ -203,7 +219,9 @@ def rule_summarize(items: list[GuideItem]) -> list[CardEntry]:
                 source=item.source,
                 author=item.author,
                 published=item.published,
-                howto=digest,
+                team=one_line(team, 150),
+                souls=one_line(souls, 150),
+                howto=howto,
                 codes=teamcode.extract_codes(item.title, item.digest, item.content),
                 degraded=True,
             )
@@ -286,6 +304,13 @@ async def summarize(
         # 模型偶尔无视提示词把码抄进字段，抄错一个字符就用不了，统一抹掉
         for attr in ("team", "souls", "howto", "note"):
             setattr(entry, attr, teamcode.strip_codes(getattr(entry, attr)))
+        # 模型很容易把整段原文塞进 howto、team/souls 留空，
+        # 用户看到的就只剩一段流水账。规则切一遍补上，原文有配置就不会丢。
+        if not entry.team and not entry.souls:
+            entry.team = fallback[index].team
+            entry.souls = fallback[index].souls
+            if entry.team or entry.souls:
+                logger.debug("[yys-guide] 模型没给式神/御魂，已用原文切分补上")
         if not (entry.team or entry.souls or entry.howto or entry.note):
             # 模型这条基本没提炼出东西，用规则版本兜住
             entry.howto = fallback[index].howto

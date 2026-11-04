@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from yys_core import fieldsplit
 from yys_core.models import CN_TZ, fmt_human_time, source_label
 from yys_core.summarize import CardEntry
 
@@ -24,11 +25,15 @@ MAX_LENGTH = 3600
 TRUNCATED_TAIL = "\n…内容过长已截断，完整内容看上方链接"
 
 _FIELD_LABELS = (
-    ("team", "阵容"),
+    ("team", "式神"),
     ("souls", "御魂"),
     ("howto", "打法"),
     ("note", "注意"),
 )
+
+#: 式神 / 御魂这两栏即使原文没写也要占位。用户拿到的信息是全的，
+#: 「原文没提」四个字比静默省略有用：一眼就知道这篇没料，该换一条看。
+_REQUIRED_FIELDS = ("team", "souls")
 
 
 def _header(topic: str, count: int, generated_at: datetime) -> str:
@@ -43,6 +48,9 @@ def _footer(entries: list[CardEntry]) -> str:
 
 
 CODE_HINT = "阵容码（式神录→阵容助手→粘贴下面这行）："
+#: 博主没贴码时说的那句话。魂土、觉醒这类刷本攻略本来就不发码，
+#: 不写清楚用户会以为是插件把码弄丢了。
+NO_CODE_NOTE = "博主没贴（可看视频简介或评论区）"
 
 
 def _code_lines(codes: list[Any], limit: int) -> list[str]:
@@ -82,6 +90,23 @@ def render_header(
     return "\n".join(lines)
 
 
+def _field_rows(entry: CardEntry) -> list[tuple[str, str]]:
+    """(标签, 值)。三种卡片风格共用，保证缺字段时占位一致。"""
+    rows: list[tuple[str, str]] = []
+    for attr, name in _FIELD_LABELS:
+        value = getattr(entry, attr, "")
+        if not value:
+            if attr in _REQUIRED_FIELDS:
+                rows.append((name, "原文没提"))
+            continue
+        if attr == "souls" and not fieldsplit.has_soul(value):
+            # 「兔子＞158＞其他＞128＞鬼使黑」只有配速没有御魂，
+            # 挂在「御魂」下面会让人以为这是御魂配置
+            name = "配速"
+        rows.append((name, value))
+    return rows
+
+
 def render_entry_block(
     entry: CardEntry,
     index: int,
@@ -101,20 +126,21 @@ def render_entry_block(
 
     meta = entry.source_text
     if meta:
-        blocks.append(f"{INDENT * 2}{meta}")
+        blocks.append(f"{INDENT * 2}博主：{meta}")
 
-    for attr, name in _FIELD_LABELS:
-        value = getattr(entry, attr, "")
-        if value:
-            blocks.append(f"{INDENT * 2}{name}：{value}")
+    for name, value in _field_rows(entry):
+        blocks.append(f"{INDENT * 2}{name}：{value}")
 
     if entry.url:
         blocks.append(f"{INDENT * 2}链接：{entry.url}")
 
-    if show_codes and entry.codes:
-        blocks.append("")
-        blocks.append(CODE_HINT)
-        blocks.extend(_code_lines(entry.codes, max_codes))
+    if show_codes:
+        if entry.codes:
+            blocks.append("")
+            blocks.append(CODE_HINT)
+            blocks.extend(_code_lines(entry.codes, max_codes))
+        else:
+            blocks.append(f"{INDENT * 2}阵容码：{NO_CODE_NOTE}")
 
     text = "\n".join(blocks)
     # 单条也可能超长（有的博主把整篇攻略塞进简介）。
@@ -234,7 +260,16 @@ def render_forward(
         return [ForwardNode(text=render_card(topic, [], generated_at, notice))]
 
     head = [render_header(topic, len(entries), generated_at, notice)]
-    head.append(f"{INDENT}点开往下翻，每条攻略一个节点，阵容码就在它自己那条里。")
+    if any(entry.codes for entry in entries):
+        head.append(f"{INDENT}点开往下翻，每条攻略一个节点，阵容码就在它自己那条里。")
+    else:
+        # 魂土、觉醒这类刷本攻略本来就不发码：打法就是配速 + 御魂，
+        # 照着文字配比导入一套阵容还准。提前说一声，省得用户以为码丢了。
+        head.append(
+            f"{INDENT}点开往下翻，每条攻略一个节点。"
+            "这几条博主都没贴阵容码（刷本类通常不发），"
+            "式神和御魂直接列在每条里，照着配就行。"
+        )
     nodes: list[ForwardNode] = [ForwardNode(text="\n".join(head))]
 
     total = len(entries)
@@ -279,17 +314,18 @@ def render_markdown(
         lines.append(f"**{index}. {entry.title}**")
         meta = entry.source_text
         if meta:
-            lines.append(f"`{meta}`")
-        for attr, label in _FIELD_LABELS:
-            value = getattr(entry, attr, "")
-            if value:
-                lines.append(f"- **{label}**：{value}")
+            lines.append(f"`博主：{meta}`")
+        for label, value in _field_rows(entry):
+            lines.append(f"- **{label}**：{value}")
         if entry.url:
             lines.append(f"[原文]({entry.url})")
-        if show_codes and entry.codes:
-            lines.append("")
-            lines.append(CODE_HINT)
-            lines.extend(_code_lines(entry.codes, max_codes))
+        if show_codes:
+            if entry.codes:
+                lines.append("")
+                lines.append(CODE_HINT)
+                lines.extend(_code_lines(entry.codes, max_codes))
+            else:
+                lines.append(f"- **阵容码**：{NO_CODE_NOTE}")
         lines.append("")
 
     footer = _footer(entries)
@@ -322,16 +358,17 @@ def render_plain(
         lines.append(f"{index}. {entry.title}")
         meta = entry.source_text
         if meta:
-            lines.append(f"   {meta}")
-        for attr, label in _FIELD_LABELS:
-            value = getattr(entry, attr, "")
-            if value:
-                lines.append(f"   {label}：{value}")
+            lines.append(f"   博主：{meta}")
+        for label, value in _field_rows(entry):
+            lines.append(f"   {label}：{value}")
         if entry.url:
-            lines.append(f"   {entry.url}")
-        if show_codes and entry.codes:
-            lines.append(CODE_HINT)
-            lines.extend(_code_lines(entry.codes, max_codes))
+            lines.append(f"   链接：{entry.url}")
+        if show_codes:
+            if entry.codes:
+                lines.append(CODE_HINT)
+                lines.extend(_code_lines(entry.codes, max_codes))
+            else:
+                lines.append(f"   阵容码：{NO_CODE_NOTE}")
         lines.append("")
     return "\n".join(lines).strip()
 

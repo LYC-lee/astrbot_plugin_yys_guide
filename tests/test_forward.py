@@ -100,7 +100,7 @@ def test_node_body_keeps_link() -> None:
     nodes = render_forward("魂土阵容", [make_entry(1)], generated_at=NOW)
     body = nodes[1].text
     check("节点里有原文链接", "https://example.com/1" in body)
-    check("节点里有阵容字段", "阵容：须佐之男" in body)
+    check("节点里有式神字段", "式神：须佐之男" in body)
     check("节点里有打法字段", "打法：" in body)
 
 

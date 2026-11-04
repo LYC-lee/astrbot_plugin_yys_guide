@@ -248,7 +248,10 @@ def test_code_line_is_copyable() -> None:
 
 def test_no_code_no_hint() -> None:
     text = render_card("超鬼王", [_entry()], NOW)
-    check("没有码时不出现阵容码提示行", "阵容码" not in text)
+    # 没码的时候不摆「粘贴下面这行」那种空架子，但要明确说一句博主没贴：
+    # 静默省掉的话，用户会以为是插件把码弄丢了。
+    check("没有码时不出现粘贴提示", "粘贴下面这行" not in text)
+    check("没有码时明确说明博主没贴", "阵容码：博主没贴" in text)
 
 
 def test_multiple_codes_each_own_line() -> None:

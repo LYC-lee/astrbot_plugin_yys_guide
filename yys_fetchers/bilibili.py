@@ -59,7 +59,10 @@ def _ts_to_dt(value: Any) -> datetime | None:
 
 class BilibiliFetcher(BaseFetcher):
     source = "bilibili"
-    enrich_limit = 3
+    # 搜索接口给的 description 是截断版，长简介里的阵容码常在后面。
+    # 只补前 3 条的话，第 4、5 条的码会跟着截断一起丢，所以按一次查询
+    # 最多可能展示的条数补（5 条，并发请求，代价可以忽略）。
+    enrich_limit = 5
 
     def __init__(self, client, conf: dict[str, Any] | None = None):
         super().__init__(client, conf)

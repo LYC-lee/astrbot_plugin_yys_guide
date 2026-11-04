@@ -67,7 +67,7 @@ def _data_dir() -> str:
     PLUGIN_NAME,
     "yys-guide",
     "阴阳师攻略助手：关键词触发，自动抓取博主攻略（网易大神/B站/NGA/微博/抖音）并整理成结构化卡片",
-    "1.5.0",
+    "1.6.0",
     "https://github.com/LYC-lee/astrbot_plugin_yys_guide",
 )
 class YysGuidePlugin(Star):
